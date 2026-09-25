@@ -75,6 +75,7 @@ def _provenance_digest(records: list[tuple[str, str]]) -> str:
     whichever byte layout the reader happened to see.
     """
     digest = hashlib.sha256()
+    # Frozen identifier: intentionally keeps the old project name so existing digests do not change.
     digest.update(b"normalizeTE-draw-provenance-v1\0")
     digest.update(len(records).to_bytes(8, "little"))
     for timestamp, record in records:

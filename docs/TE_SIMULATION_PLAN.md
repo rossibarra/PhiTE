@@ -1,4 +1,4 @@
-# Simulation plan for validating normalizeTE
+# Simulation plan for validating PhiTE
 
 ## Objective
 
@@ -10,7 +10,7 @@ The key comparison is between:
 
 1. frequency spectra computed against randomly sampled neutral SNPs;
 2. frequency spectra computed against SNPs matched to the true TE ages; and
-3. the production normalizeTE workflow using genealogy-based posterior age
+3. the production PhiTE workflow using genealogy-based posterior age
    distributions and bootstrap-matched SNP controls.
 
 The simulations should demonstrate two properties:
@@ -55,7 +55,7 @@ counts separately. The sampled presence matrix contains only the merged binary
 insertion state. This matrix, rather than the raw `m2`/`m3` mutation records,
 is the authoritative TE genotype source for downstream VCF construction.
 
-The raw tree sequence is intentionally not yet a normalizeTE input. It can
+The raw tree sequence is intentionally not yet a PhiTE input. It can
 contain both functional and disabled mutation records at one insertion site,
 and cut-and-paste movement can introduce loss events at donor sites. A later
 canonicalization step will build the biallelic insertion VCF and either infer
@@ -256,23 +256,23 @@ For each independently simulated population, construct 100 control sets by:
 2. matching neutral SNPs to the exact TE-age distribution.
 
 This tier establishes whether age conditioning works independently of ARG
-inference and normalizeTE's matching optimizer.
+inference and PhiTE's matching optimizer.
 
 ### Tier 2: known-tree age intervals
 
 Derive mutation-age intervals from the known simulated genealogy. This tests
 the effect of branch-width uncertainty even when the genealogy is correct.
 Raw TE state mutations must first be canonicalized to one insertion-presence
-mutation per locus; otherwise the raw tree sequence violates normalizeTE's
+mutation per locus; otherwise the raw tree sequence violates PhiTE's
 single-event site assumptions.
 
-### Tier 3: posterior ARGs and production normalizeTE
+### Tier 3: posterior ARGs and production PhiTE
 
 For a stratified subset of simulations:
 
 1. export a biallelic VCF containing neutral SNPs and merged TE-presence calls;
 2. infer posterior ARG draws using the empirical analysis workflow;
-3. build the normalizeTE interval store;
+3. build the PhiTE interval store;
 4. build TE targets and bootstrap age-matched controls; and
 5. calculate Phi-SFS with the production implementation.
 

@@ -37,6 +37,14 @@ def test_target_cli_defaults_to_bootstrap_median():
     assert args.acceptance_quantile == 0.50
 
 
+def test_target_cli_accepts_short_a_type_flag():
+    args = parse_args([
+        "--store", "store", "--te-positions", "a.txt", "--output", "target",
+        "-A", "SNP", "--vcf-eligibility", "eligibility",
+    ])
+    assert args.a_type == "SNP"
+
+
 def test_aggregate_averages_cdfs():
     rows = np.array([[0, 0.5, 1], [0, 1, 1]], dtype=float)
     np.testing.assert_allclose(aggregate_cdf(rows), [0, 0.75, 1])

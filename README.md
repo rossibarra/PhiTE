@@ -316,7 +316,7 @@ python -m normalize_tes.bootstrap_target_matcher \
   --output "$MATCHES" \
   --work-dir "$WORK_DIR" \
   --resume \
-  --replicates 1001 \
+  --replicates 1201 \
   --restarts 3 \
   --disjoint-replicates \
   --seed 1002
@@ -342,7 +342,7 @@ Matcher flags:
 | `--output` | new matched-control bundle |
 | `--work-dir` | durable per-replicate state used by `--resume` |
 | `--resume` | continue an interrupted compatible run |
-| `--replicates` | total matched control sets; production uses 1001 for one reference plus 1000 nulls |
+| `--replicates` | total matched control sets; production uses 1201: one reference, 1000 nulls, and 200 spares that replace sets failing matching QC |
 | `--restarts` | optimization restarts per control set |
 | `--disjoint-replicates` | prevent reuse of a control SNP between published sets |
 | `--seed` | matching random seed |
@@ -381,7 +381,7 @@ python -m normalize_tes.phi_sfs \
   -A "$A_TYPE" \
   -B "$B_TYPE" \
   --reference-replicate 0 \
-  --min-null-replicates 1000 \
+  --null-replicates 1000 \
   --output "$PHI"
 ```
 
@@ -394,7 +394,7 @@ python -m normalize_tes.phi_sfs \
 | `-A`, `--a-type` | focal type: `TE` (default) or `SNP` |
 | `-B`, `--b-type` | control type; currently `SNP` only |
 | `--reference-replicate` | prespecified matched replicate held fixed as $B_0$ |
-| `--min-null-replicates` | required QC-passing null sets after reserving $B_0$; default 1000 |
+| `--null-replicates` | exact null count $R$: the first $R$ QC-passing non-reference sets in replicate-ID order; fails if fewer pass; default 1000 |
 | `--output` | new Phi-SFS result directory |
 
 The default rejects heterozygous calls. Use `--heterozygous missing` only when the
@@ -472,7 +472,11 @@ sampling floor separately for every focal category rather than comparing raw
    \mathbf{1}\!\left(D_i^0\ge D_{\mathrm{obs}}\right)}{R+1}.
    $$
 
-The production matcher requires these $R+1$ control sets to be globally disjoint.
+The matcher publishes $R+1+K$ sets, with $K=200$ spares in production, so that $R$
+stays fixed at 1000 in every category even when some sets fail matching QC. Phi-SFS
+uses $B_0$ plus the first $R$ QC-passing sets in replicate-ID order and records the
+unused spares. QC depends only on age matching, so this selection cannot depend on
+any SFS. All published sets must be globally disjoint.
 Thus every control SNP has maximum reuse one and every $B_i$ has zero overlap with
 $B_0$. Set 0 is designated as $B_0$ before any SFS is examined; it differs from the
 other sets only in being held fixed in the distance calculations.
@@ -524,7 +528,7 @@ sbatch --export=ALL,STORE="$STORE",TARGET="$TARGET",A_POSITIONS="$A_POSITIONS",\
 OUTPUT="$MATCHES",CANDIDATE_ROWS="$CANDIDATES",WORK_DIR="$WORK_DIR",\
 VCF_ELIGIBILITY="$VCF_ELIGIBILITY",A_TYPE="$A_TYPE",\
 TE_POLARITY_MASK="$POLARITY_MASK",MAX_FLIPPED_FRACTION=0.5,\
-REPLICATES=1001,RESTARTS=3,SEED=1002,SCRATCH_HEADROOM_GB=32 \
+REPLICATES=1201,RESTARTS=3,SEED=1002,SCRATCH_HEADROOM_GB=32 \
   slurm/run_bootstrap_matching.sbatch
 ```
 
@@ -588,7 +592,7 @@ Set the shared inputs, then submit one mask job and one dependent target/matchin
 per manifest row:
 
 ```bash
-PROJECT=/quobyte/project/normalizeTE
+PROJECT=/quobyte/project/PhiTE
 STORE=/quobyte/project/data/age_interval_store
 CANDIDATES=/quobyte/project/data/candidate_rows.npy
 VCF_ELIGIBILITY=/quobyte/project/data/vcf_eligibility
@@ -611,7 +615,7 @@ while IFS=$'\t' read -r label positions prelim mask target matches work seed; do
 A_POSITIONS="$positions",A_TYPE=TE,OUTPUT="$matches",CANDIDATE_ROWS="$CANDIDATES",\
 VCF_ELIGIBILITY="$VCF_ELIGIBILITY",\
 WORK_DIR="$work",TE_POLARITY_MASK="$mask",MAX_FLIPPED_FRACTION=0.5,\
-REPLICATES=1001,RESTARTS=3,SEED="$seed",SCRATCH_HEADROOM_GB=32 \
+REPLICATES=1201,RESTARTS=3,SEED="$seed",SCRATCH_HEADROOM_GB=32 \
     slurm/run_bootstrap_matching.sbatch)
   match_job=${match_job%%;*}
 
@@ -640,7 +644,7 @@ Before accepting the results:
 3. Confirm the final target records `POLARITY_MASK`, the intended
    `max_flipped_fraction`, inclusive at 0.5, the eligibility artifact, and plausible
    kept/discarded counts. For SNP A, confirm `a_type=SNP` and no TE mask.
-4. Confirm the matcher published 1001 identically generated sets in disjoint mode,
+4. Confirm the matcher published 1201 identically generated sets in disjoint mode,
    maximum control reuse is one, every overlap with $B_0$ is zero, and all sets used
    in Phi-SFS pass matching QC.
 5. Confirm the `phi-sfs-wasserstein-v1` result records the intended A/B types, exactly

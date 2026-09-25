@@ -429,10 +429,11 @@ def load_polarity_selection(
 
     keep_sites = np.ones(rows.size, dtype=bool)
     if max_flipped_fraction is not None:
-        # Sites with no draw at all carry no evidence of being flipped, so the
-        # threshold cannot speak to them; they are left to the usual coverage
-        # handling rather than discarded here.
-        keep_sites = (usable == 0) | (flipped_fraction <= max_flipped_fraction)
+        # Retention requires positive evidence about orientation. A site with
+        # no usable draw cannot meet an at-least-50%-derived rule and is removed
+        # rather than being treated as if zero observed disagreement were
+        # evidence of agreement.
+        keep_sites = (usable > 0) & (flipped_fraction <= max_flipped_fraction)
 
     keep_draws = present & agrees
     no_agreeing = keep_draws.sum(axis=1) == 0
@@ -447,7 +448,9 @@ def load_polarity_selection(
             float(flipped.sum() / usable.sum()) if usable.sum() else 0.0
         ),
         "sites_with_any_flipped_draw": int((flipped > 0).sum()),
-        "sites_with_no_agreeing_draw": int(no_agreeing.sum()),
+        "sites_with_no_usable_draw": int((usable == 0).sum()),
+        "sites_with_no_agreeing_draw_total": int(no_agreeing.sum()),
+        "sites_with_no_agreeing_draw": int((no_agreeing & keep_sites).sum()),
         "max_flipped_fraction": max_flipped_fraction,
         "sites_discarded_by_threshold": int((~keep_sites).sum()),
         "sites_kept": int(keep_sites.sum()),
@@ -629,7 +632,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "the mutation on a different branch and recorded that branch's age",
     )
     parser.add_argument(
-        "--a-type", choices=("TE", "SNP"), default="TE",
+        "-A", "--a-type", choices=("TE", "SNP"), default="TE",
         help="variant type of target A (default: TE). SNP uses the full ARG "
              "posterior orientation in the shared VCF eligibility artifact",
     )

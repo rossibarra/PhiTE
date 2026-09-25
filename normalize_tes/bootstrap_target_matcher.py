@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import shutil
 import sys
@@ -40,7 +41,7 @@ ALGORITHM_VERSION = "bootstrap-target-exact-greedy-v1"
 
 @dataclass(frozen=True)
 class OptimizerConfig:
-    replicates: int = 1001
+    replicates: int = 1201
     restarts: int = 3
     min_epochs: int = 10
     max_epochs: int = 50
@@ -398,13 +399,46 @@ def target_digest_for(path: Path) -> tuple[str, np.ndarray, np.ndarray, np.ndarr
     return digest, rows, cdf, ages, threshold, metadata
 
 
-def _validate_inputs(store: object, target_meta: dict) -> None:
+def _validate_inputs(store: object, target_meta: dict, a_type: str) -> None:
     actual_schema = store_schema(store)
     actual_content = getattr(store, "metadata", {}).get("content_sha256")
     actual_catalog = getattr(store, "metadata", {}).get("catalog_sha256")
     expected_schema = target_meta.get("source_store_schema")
     expected_content = target_meta.get("source_store_content_sha256")
     expected_catalog = target_meta.get("source_catalog_sha256")
+    target_a_type = target_meta.get("a_type")
+    if target_a_type not in ("TE", "SNP"):
+        raise ValueError(
+            "target metadata does not declare a valid a_type; rebuild the target "
+            "with normalize_tes.te_age_target --a-type TE or SNP"
+        )
+    if target_a_type != a_type:
+        raise ValueError(
+            f"--a-type {a_type} disagrees with target metadata a_type={target_a_type}"
+        )
+    eligibility = target_meta.get("vcf_eligibility")
+    if not isinstance(eligibility, dict) or not eligibility.get("mask"):
+        raise ValueError(
+            "age matching requires a final target built with --vcf-eligibility "
+            "so A was filtered before its size and age CDF were fixed"
+        )
+    te_polarity = target_meta.get("te_polarity")
+    if a_type == "TE":
+        if not isinstance(te_polarity, dict):
+            raise ValueError(
+                "-A TE requires a final target built with --te-polarity-mask "
+                "and --max-flipped-fraction 0.5"
+            )
+        threshold = te_polarity.get("max_flipped_fraction")
+        if not isinstance(threshold, (int, float)) or not math.isclose(
+            float(threshold), 0.5, rel_tol=0.0, abs_tol=1e-12
+        ):
+            raise ValueError(
+                "-A TE requires max_flipped_fraction=0.5 so exact 50% "
+                "derived-support ties are retained"
+            )
+    elif te_polarity is not None:
+        raise ValueError("-A SNP target must not apply the TE polarity filter")
     if expected_schema is not None and expected_schema != actual_schema:
         raise ValueError("target and store schemas differ")
     if expected_content is not None and expected_content != actual_content:
@@ -641,6 +675,7 @@ def _write_outputs(
     all_restarts: list[list[RestartResult]],
     selected_restart: np.ndarray,
     config: OptimizerConfig,
+    a_type: str,
     global_seed: int,
     candidate_digest: str | None,
     target_digest: str,
@@ -852,7 +887,8 @@ def _write_outputs(
             "qc_passes": int(qc.sum()),
             "qc_failures": int((~qc).sum()),
             "qc_interpretation": "optimizer convergence diagnostic, not biological validation",
-            "bootstrap_kind": "iid multinomial TE-site bootstrap",
+            "a_type": a_type,
+            "bootstrap_kind": "iid multinomial A-site bootstrap",
             "bootstrap_linkage_warning": (
                 "inferential use requires exchangeability support or replacement "
                 "with a prespecified genomic-block bootstrap"
@@ -902,7 +938,7 @@ def run(args: argparse.Namespace) -> None:
     quotas = np.load(args.target / "interval_quotas.npy", allow_pickle=False)
     if int(quotas.sum()) != target_rows.size:
         raise ValueError("target quotas do not sum to the target set size")
-    _validate_inputs(store, target_meta)
+    _validate_inputs(store, target_meta, args.a_type)
     candidates, candidate_digest = _candidate_rows(args, store, target_rows)
     if candidates.size <= target_rows.size:
         raise ValueError("candidate universe must exceed target set size")
@@ -989,6 +1025,7 @@ def run(args: argparse.Namespace) -> None:
         "target_digest": target_digest,
         "source_store_content_sha256": getattr(store, "metadata", {}).get("content_sha256"),
         "candidate_rows_digest": candidate_digest,
+        "a_type": args.a_type,
         "global_seed": args.seed,
         "config": asdict(config),
     }
@@ -1144,6 +1181,7 @@ def run(args: argparse.Namespace) -> None:
         all_restarts=all_restarts,
         selected_restart=selected_restart,
         config=config,
+        a_type=args.a_type,
         global_seed=args.seed,
         candidate_digest=candidate_digest,
         target_digest=target_digest,
@@ -1159,8 +1197,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--store", type=Path, required=True,
                         help="interval store supplying candidate SNP ages")
     parser.add_argument("--target", type=Path, required=True,
-                        help="TE target directory from normalize_tes.te_age_target; supplies "
+                        help="focal A target from normalize_tes.te_age_target; supplies "
                              "the age CDF, the acceptance threshold and the strata")
+    parser.add_argument(
+        "-A", "--a-type", choices=("TE", "SNP"), default="TE",
+        help="variant type of focal target A; must match target metadata (default: TE)",
+    )
     parser.add_argument("--init-oversample", type=int, default=20,
                         help="candidates drawn per required site when filling the "
                              "initial age strata. Larger fills the strata better "
@@ -1185,9 +1227,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--keep-work", action="store_true",
                         help="keep the work directory after a successful publish")
     parser.add_argument(
-        "--replicates", type=int, default=1001,
+        "--replicates", type=int, default=1201,
         help="bootstrap replicates to match, one published control set each "
-             "(default: 1001, comprising one reference and 1000 null sets)",
+             "(default: 1201: one reference, 1000 null sets, and 200 spares "
+             "that replace sets failing matching QC)",
     )
     parser.add_argument(
         "--restarts", type=int, default=3,

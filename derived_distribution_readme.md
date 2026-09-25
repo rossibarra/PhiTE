@@ -1,6 +1,6 @@
 # Derived-allele age distributions per individual
 
-A side pipeline of normalizeTE. Given VCFs and the posterior ARG draws, it
+A side pipeline of PhiTE. Given VCFs and the posterior ARG draws, it
 builds, for each individual, the combined distribution of the ages of the
 derived alleles that individual carries.
 

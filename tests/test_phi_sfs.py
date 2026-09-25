@@ -378,7 +378,7 @@ def _run(target, matches, vcf, output, *extra):
     argv = [
         "--target", str(target), "--matches", str(matches),
         "--vcf", str(vcf), "--output", str(output),
-        "--min-null-replicates", "2", *extra,
+        "--null-replicates", "2", *extra,
     ]
     if "--ancestral-table" not in argv:
         argv += ["--ancestral-table", str(_ancestral_table(Path(output).parent))]
@@ -452,7 +452,7 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
     assert metadata["a_retained_fraction"] == pytest.approx(1)
     assert metadata["a_endpoint_fraction"] == pytest.approx(0)
     assert metadata["distinct_projections"] == 5
-    assert metadata["software"]["name"] == "normalizeTE"
+    assert metadata["software"]["name"] == "PhiTE"
     assert metadata["creation_command"]
     assert metadata["creation_time_utc"]
     assert metadata["numpy_version"]
@@ -664,8 +664,51 @@ def test_minimum_null_count_is_enforced(tmp_path):
     with pytest.raises(ValueError, match="only 2 QC-passing null replicates"):
         _run(
             target, matches, vcf, tmp_path / "phi",
-            "--min-null-replicates", "3",
+            "--null-replicates", "3",
         )
+
+
+def _spare_set_bundle(tmp_path):
+    """Four matched sets, so R = 2 leaves one spare set."""
+    target, matches = _write_bundle(
+        tmp_path,
+        positions=np.array([[30, 40], [50, 60], [70, 80], [90, 100]]),
+        row_indices=np.array([[2, 3], [4, 5], [6, 7], [8, 9]], dtype=np.int64),
+    )
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text() + _record(90, 2) + "\n" + _record(100, 6) + "\n")
+    table = _ancestral_table(
+        tmp_path, positions=(10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+    )
+    return target, matches, vcf, table
+
+
+def test_nulls_are_the_first_r_passing_sets_in_replicate_order(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    assert np.load(output / "null_replicate_id.npy").tolist() == [1, 2]
+    assert np.load(output / "b_replicate_id.npy").tolist() == [0, 1, 2]
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["requested_null_replicates"] == 2
+    assert metadata["matched_sets_published"] == 4
+    assert metadata["matched_sets_failing_qc"] == 0
+    assert metadata["qc_passing_null_sets_available"] == 3
+    assert metadata["unused_qc_passing_replicate_ids"] == [3]
+
+
+def test_a_failed_set_is_replaced_by_the_next_spare(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    qc = np.load(matches / "qc_pass.npy")
+    qc[1] = False
+    np.save(matches / "qc_pass.npy", qc)
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    assert np.load(output / "null_replicate_id.npy").tolist() == [2, 3]
+    assert np.load(output / "b_replicate_id.npy").tolist() == [0, 2, 3]
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["matched_sets_failing_qc"] == 1
+    assert metadata["unused_qc_passing_replicate_ids"] == []
 
 
 def test_equal_eligible_site_count_is_enforced(tmp_path):

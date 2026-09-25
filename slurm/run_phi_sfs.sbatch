@@ -44,7 +44,7 @@
 #   A_TYPE      TE|SNP for focal set A                                  (TE)
 #   B_TYPE      SNP for matched control sets B                          (SNP)
 #   REFERENCE_REPLICATE  prespecified B0 replicate ID                     (0)
-#   MIN_NULL_REPLICATES  minimum QC-passing null sets                  (1000)
+#   NULL_REPLICATES  exact R: first R QC-passing non-reference sets    (1000)
 #   HETEROZYGOUS  error|missing for diploid calls                 (error)
 #
 # The scan is the dominant cost and is polarity-independent: it reads the VCF
@@ -65,7 +65,7 @@ HETEROZYGOUS="${HETEROZYGOUS:-error}"
 A_TYPE="${A_TYPE:-TE}"
 B_TYPE="${B_TYPE:-SNP}"
 REFERENCE_REPLICATE="${REFERENCE_REPLICATE:-0}"
-MIN_NULL_REPLICATES="${MIN_NULL_REPLICATES:-1000}"
+NULL_REPLICATES="${NULL_REPLICATES:-1000}"
 cd "$PROJECT"
 # Batch jobs get a non-login shell, where `module` does not exist.
 . "$PROJECT/slurm/slurm_conda_bootstrap.sh"
@@ -90,6 +90,6 @@ python -m normalize_tes.phi_sfs \
     -A "$A_TYPE" \
     -B "$B_TYPE" \
     --reference-replicate "$REFERENCE_REPLICATE" \
-    --min-null-replicates "$MIN_NULL_REPLICATES" \
+    --null-replicates "$NULL_REPLICATES" \
     --heterozygous "$HETEROZYGOUS"
 date

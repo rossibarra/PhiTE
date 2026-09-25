@@ -23,13 +23,48 @@ from test_swap_control_sampler import _interval_store, _target
 
 
 def test_default_replicate_count_provides_reference_and_null_sets():
-    assert OptimizerConfig().replicates == 1001
+    assert OptimizerConfig().replicates == 1201
     args = parse_args([
         "--store", "store", "--target", "target", "--all-eligible",
         "--output", "output", "--disjoint-replicates",
     ])
-    assert args.replicates == 1001
+    assert args.replicates == 1201
     assert args.disjoint_replicates
+    assert args.a_type == "TE"
+
+
+def test_a_type_must_match_the_filtered_target(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    with pytest.raises(ValueError, match="disagrees with target metadata"):
+        _run_matcher(store, target, tmp_path / "output", "-A", "SNP")
+
+
+def test_snp_a_uses_snp_filtered_target_without_te_polarity(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    metadata_path = target / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["a_type"] = "SNP"
+    metadata["te_polarity"] = None
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    (target / "te_keep_draws.npy").unlink()
+
+    output = tmp_path / "output"
+    assert _run_matcher(store, target, output, "-A", "SNP") == 0
+    published = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+    assert published["a_type"] == "SNP"
+
+
+def test_te_a_requires_inclusive_half_derived_filter(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    metadata_path = target / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["te_polarity"]["max_flipped_fraction"] = 0.49
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="max_flipped_fraction=0.5"):
+        _run_matcher(store, target, tmp_path / "output")
 
 
 def test_disjoint_capacity_fails_before_creating_work_state(tmp_path):
@@ -184,7 +219,7 @@ def test_resume_rejects_a_changed_implementation(tmp_path):
         "--work-dir", str(work), "--keep-work",
     ) == 0
     identity = json.loads((work / "identity.json").read_text())
-    assert identity["software"]["name"] == "normalizeTE"
+    assert identity["software"]["name"] == "PhiTE"
     assert identity["numpy_version"]
     identity["software"]["git_commit"] = "0" * 40
     (work / "identity.json").write_text(json.dumps(identity, indent=2, sort_keys=True))

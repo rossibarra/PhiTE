@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_NAME = "normalizeTE"
+PROJECT_NAME = "PhiTE"
 PROJECT_VERSION = "0.7.0"
 
 

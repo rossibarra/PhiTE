@@ -65,7 +65,7 @@ def _completed(path: Path, mode: str) -> bool:
     output_version = software.get("version") if isinstance(software, dict) else None
     if output_version != PROJECT_VERSION:
         raise ValueError(
-            f"existing output {path} was made by normalizeTE "
+            f"existing output {path} was made by PhiTE "
             f"{output_version!r}, expected {PROJECT_VERSION!r}"
         )
     try:

@@ -723,8 +723,8 @@ def _validate_provenance(target: Path, matches: Path) -> tuple[dict, dict, str]:
 
 
 def calculate(args: argparse.Namespace) -> None:
-    if args.min_null_replicates < 2:
-        raise ValueError("--min-null-replicates must be at least 2 for a Z-score")
+    if args.null_replicates < 2:
+        raise ValueError("--null-replicates must be at least 2 for a Z-score")
     target_meta, match_meta, target_digest = _validate_provenance(args.target, args.matches)
     match_schema = match_meta.get("schema_version")
     if match_schema != "bootstrap-target-matches-v1":
@@ -759,13 +759,28 @@ def calculate(args: argparse.Namespace) -> None:
     reference_source_index = int(reference_hits[0])
     if not bool(qc_pass[reference_source_index]):
         raise ValueError(f"reference replicate ID {args.reference_replicate} failed matching QC")
-    accepted_source_indices = np.flatnonzero(qc_pass)
-    null_count = int(accepted_source_indices.size - 1)
-    if null_count < args.min_null_replicates:
+    # R is fixed so every category is calibrated with equal precision. The
+    # matcher publishes spare sets; the nulls are the first R QC-passing
+    # non-reference sets in replicate_id order. QC is age-only, so this choice
+    # is made before and independently of any SFS. Unused spares are the
+    # latest, most pool-depleted replicates.
+    replicate_order = np.argsort(replicate_ids, kind="stable")
+    passing_nulls = replicate_order[
+        qc_pass[replicate_order] & (replicate_order != reference_source_index)
+    ]
+    available_null_count = int(passing_nulls.size)
+    null_count = int(args.null_replicates)
+    if available_null_count < null_count:
         raise ValueError(
-            f"only {null_count} QC-passing null replicates remain after reserving "
-            f"B0; --min-null-replicates requires {args.min_null_replicates}"
+            f"only {available_null_count} QC-passing null replicates remain after "
+            f"reserving B0; --null-replicates requires {null_count}. Publish more "
+            "spare matched sets rather than lowering R after the fact"
         )
+    null_source_indices = passing_nulls[:null_count]
+    unused_passing_ids = replicate_ids[passing_nulls[null_count:]]
+    accepted_source_indices = np.sort(
+        np.append(null_source_indices, reference_source_index)
+    )
     reference_index = int(np.flatnonzero(
         accepted_source_indices == reference_source_index
     )[0])
@@ -1165,8 +1180,15 @@ def calculate(args: argparse.Namespace) -> None:
             "reference_index_in_b_arrays": reference_index,
             "reference_bootstrap_seed": int(bootstrap_seeds[reference_source]),
             "reference_bootstrap_counts_array": "b_bootstrap_counts.npy",
-            "requested_minimum_null_replicates": args.min_null_replicates,
+            "requested_null_replicates": null_count,
             "accepted_null_replicates": null_count,
+            "null_selection_rule": (
+                "first R QC-passing non-reference sets in replicate_id order"
+            ),
+            "matched_sets_published": int(replicate_ids.size),
+            "matched_sets_failing_qc": int(np.count_nonzero(~qc_pass)),
+            "qc_passing_null_sets_available": available_null_count,
+            "unused_qc_passing_replicate_ids": unused_passing_ids.tolist(),
             "null_standard_deviation_ddof": 1,
             "p_value_tail_rule": "null distance >= observed distance",
             "p_value_formula": "(1 + exceedances) / (R + 1)",
@@ -1236,8 +1258,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="prespecified matched replicate ID to hold fixed as B0 (default: 0)",
     )
     parser.add_argument(
-        "--min-null-replicates", type=int, default=1000,
-        help="minimum QC-passing B_i sets after reserving B0 (default: 1000)",
+        "--null-replicates", type=int, default=1000,
+        help="exact number R of null B_i sets: the first R QC-passing "
+             "non-reference sets in replicate_id order; fails if fewer pass "
+             "(default: 1000)",
     )
     parser.add_argument(
         "--ancestral-table", type=Path, required=True,
