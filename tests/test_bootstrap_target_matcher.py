@@ -16,6 +16,7 @@ from normalize_tes.bootstrap_target_matcher import (
     log_search_grid,
     main,
     median_age_strata,
+    stratum_mass,
     optimize_restart,
     parse_args,
     validate_restart_result,
@@ -188,10 +189,33 @@ def test_median_age_strata_is_shared_and_chunk_invariant(tmp_path):
                                   chunk_rows=1, block_rows=1),
     )
     np.testing.assert_array_equal(strata, [1] * 6 + [2] * 6)
-    counts, capacity = disjoint_stratum_capacity(store, candidates, boundaries, quotas)
     np.testing.assert_array_equal(quotas, [0, 1, 1, 0])
-    np.testing.assert_array_equal(counts, [0, 6, 6, 0])
-    np.testing.assert_array_equal(capacity, [np.inf, 6.0, 6.0, np.inf])
+
+
+def test_capacity_is_measured_in_age_mass_on_both_sides(tmp_path):
+    """Boundaries are -5, 5, 15, 25, 35 and every interval is 10 generations.
+
+    Target TEs span [0, 10] and [12, 22], so their stratum masses are
+    (0.5, 0.5, 0, 0) and (0, 0.3, 0.7, 0). A young candidate [1, 11] gives
+    (0.4, 0.6, 0, 0) and an old one [13, 23] gives (0, 0.2, 0.8, 0). The
+    median-based quota for stratum 0 would be zero; its mass is not.
+    """
+    store_path = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 6 + [_OLD] * 6)
+    target = _target(tmp_path / "target", store_path)
+    store = open_snp_age_store(store_path)
+    boundaries = np.load(target / "interval_boundary_ages.npy")
+    candidates = np.arange(2, 14)
+    np.testing.assert_allclose(
+        stratum_mass(store, candidates, boundaries),
+        stratum_mass(store, candidates, boundaries, chunk_rows=1, block_rows=1),
+    )
+    candidate_mass, target_mass, capacity = disjoint_stratum_capacity(
+        store, candidates, np.array([0, 1]), boundaries)
+    np.testing.assert_allclose(target_mass, [0.5, 0.8, 0.7, 0.0])
+    np.testing.assert_allclose(candidate_mass, [2.4, 4.8, 4.8, 0.0])
+    np.testing.assert_allclose(capacity, [4.8, 6.0, 4.8 / 0.7, np.inf])
+    # Every row contributes exactly one unit of mass.
+    assert candidate_mass.sum() == pytest.approx(candidates.size)
 
 
 def test_disjoint_stratum_capacity_passes_when_every_stratum_suffices(tmp_path):
@@ -205,14 +229,20 @@ def test_disjoint_stratum_capacity_passes_when_every_stratum_suffices(tmp_path):
     ) == 0
     metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["stratum_quotas"] == [0, 1, 1, 0]
-    assert metadata["disjoint_stratum_candidates"] == [0, 6, 6, 0]
-    assert metadata["disjoint_stratum_capacity_sets"] == [None, 6.0, 6.0, None]
+    assert metadata["disjoint_stratum_candidate_mass"] == pytest.approx([2.4, 4.8, 4.8, 0.0])
+    assert metadata["disjoint_stratum_target_mass"] == pytest.approx([0.5, 0.8, 0.7, 0.0])
+    assert metadata["disjoint_stratum_capacity_sets"][:3] == pytest.approx([4.8, 6.0, 4.8 / 0.7])
+    assert metadata["disjoint_stratum_capacity_sets"][3] is None
     assert metadata["maximum_control_reuse"] == 1
     assert metadata["vcf_eligibility_identity"] == ELIGIBILITY_IDENTITY
 
 
 def test_disjoint_capacity_fails_when_one_stratum_is_thin(tmp_path):
-    """Ten candidates hold 3 x 2 in total, but only two are young."""
+    """Ten candidates hold 3 x 2 in total, but only two are young.
+
+    The two young candidates supply 0.8 of stratum-0 mass against the
+    3 x 0.5 = 1.5 that three disjoint sets need; strata 1 and 2 suffice.
+    """
     store = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 2 + [_OLD] * 8)
     target = _target(tmp_path / "target", store)
     candidates = _candidate_file(tmp_path, np.arange(2, 12))
@@ -224,7 +254,8 @@ def test_disjoint_capacity_fails_when_one_stratum_is_thin(tmp_path):
         )
     message = str(caught.value)
     assert "1 of 4 strata fall short" in message
-    assert "stratum 1: 2 candidates / quota 1 = 2.0 sets" in message
+    assert "stratum 0: candidate mass 0.8 / target mass 0.50 = 1.6 sets" in message
+    assert "stratum 1" not in message
     assert "stratum 2" not in message
     assert "will not be silently reused" in message
     assert not output.exists()

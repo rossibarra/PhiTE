@@ -152,9 +152,10 @@ def median_age_strata(
     The median is read off the row's CDF at the target's boundary ages: the
     stratum is the one whose upper boundary is the first at which the CDF
     reaches 0.5. Rows whose CDF never reaches 0.5 by the last boundary go to
-    the oldest stratum. This is the single definition shared by the
-    stratified initialisation and the disjoint capacity preflight, so the
-    preflight counts exactly the strata the initialiser fills.
+    the oldest stratum. The stratified initialisation uses it to fill each
+    stratum's quota. The disjoint capacity preflight deliberately does not:
+    the quotas are shares of the target's age mass, so capacity is measured in
+    mass (`stratum_mass`), not in median counts.
 
     CDFs are evaluated `chunk_rows` at a time and reduced to a stratum index
     immediately, so memory stays bounded when the whole candidate universe is
@@ -177,50 +178,87 @@ def median_age_strata(
     return out
 
 
-def disjoint_stratum_capacity(
-    store: object, candidates: np.ndarray, boundary_ages: np.ndarray,
-    quotas: np.ndarray, *, block_rows: int = 4096,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return candidates per stratum and each stratum's capacity in sets.
+def stratum_mass(
+    store: object, rows: np.ndarray, boundary_ages: np.ndarray, *,
+    block_rows: int = 4096, chunk_rows: int = 1 << 20,
+) -> np.ndarray:
+    """Return the summed age probability mass of `rows` in each target stratum.
 
-    Capacity is `candidates_in_stratum / quota`: how many disjoint sets could
-    fill that stratum's quota before it runs dry. Strata with a zero quota
+    Each row's interval-weighted CDF is read at the target's boundary ages,
+    and the mass between consecutive boundaries is summed over rows. Mass
+    below the first boundary is added to the first stratum and mass above the
+    last boundary to the last, so every row contributes exactly one unit.
+    This is the quantity the target quotas are built from (the TE mean CDF is
+    split into equal-mass strata) and the quantity the matcher's CDF objective
+    has to reproduce, so the two sides of the capacity check are measured the
+    same way. Chunking bounds memory and does not change the result.
+    """
+    indices = np.asarray(rows, dtype=np.int64)
+    ages = np.asarray(boundary_ages, dtype=np.float64)
+    if ages.ndim != 1 or ages.size < 2:
+        raise ValueError("boundary ages must define at least one stratum")
+    if chunk_rows <= 0:
+        raise ValueError("chunk size must be positive")
+    total = np.zeros(ages.size - 1, dtype=np.float64)
+    for start in range(0, indices.size, chunk_rows):
+        stop = min(start + chunk_rows, indices.size)
+        cdf = row_cdfs(store, indices[start:stop], ages,
+                       block_rows=block_rows, dtype=np.dtype("float64"))
+        if not np.all(np.isfinite(cdf)):
+            raise ValueError("stratum mass requires a finite CDF for every row")
+        cdf[:, 0] = 0.0
+        cdf[:, -1] = 1.0
+        total += np.diff(cdf, axis=1).sum(axis=0)
+    return total
+
+
+def disjoint_stratum_capacity(
+    store: object, candidates: np.ndarray, target_rows: np.ndarray,
+    boundary_ages: np.ndarray, *, block_rows: int = 4096,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return candidate mass, target mass, and capacity in sets per stratum.
+
+    Capacity is `candidate_mass / target_mass`: how many disjoint sets could
+    supply that stratum's share of the target's age mass before the pool runs
+    dry. Both masses are summed interval-weighted CDF differences, so a
+    candidate with a diffuse age contributes to every stratum it overlaps,
+    exactly as it does in the matcher's objective. Strata with no target mass
     impose no limit and report infinite capacity.
     """
-    quotas = np.asarray(quotas, dtype=np.int64)
-    strata = median_age_strata(store, candidates, boundary_ages, quotas.size,
+    candidate_mass = stratum_mass(store, candidates, boundary_ages,
+                                  block_rows=block_rows)
+    target_mass = stratum_mass(store, target_rows, boundary_ages,
                                block_rows=block_rows)
-    counts = np.bincount(strata, minlength=quotas.size).astype(np.int64)
+    positive = target_mass > 0.0
     capacity = np.divide(
-        counts.astype(np.float64), quotas.astype(np.float64),
-        out=np.full(quotas.size, np.inf), where=quotas > 0,
+        candidate_mass, target_mass,
+        out=np.full(target_mass.size, np.inf), where=positive,
     )
-    return counts, capacity
+    return candidate_mass, target_mass, capacity
 
 
 def check_disjoint_stratum_capacity(
-    counts: np.ndarray, capacity: np.ndarray, quotas: np.ndarray,
-    replicates: int, *, show: int = 5,
+    candidate_mass: np.ndarray, target_mass: np.ndarray,
+    capacity: np.ndarray, replicates: int, *, show: int = 5,
 ) -> None:
-    """Fail unless every stratum holds `replicates x quota` candidates."""
-    quotas = np.asarray(quotas, dtype=np.int64)
-    short = np.flatnonzero(counts < replicates * quotas)
+    """Fail unless every stratum holds `replicates x target mass` candidate mass."""
+    short = np.flatnonzero(candidate_mass < replicates * target_mass)
     if not short.size:
         return
     worst = short[np.argsort(capacity[short], kind="stable")][:show]
     detail = "; ".join(
-        f"stratum {int(k)}: {int(counts[k]):,} candidates / quota "
-        f"{int(quotas[k]):,} = {capacity[k]:.1f} sets"
+        f"stratum {int(k)}: candidate mass {candidate_mass[k]:,.1f} / target "
+        f"mass {target_mass[k]:,.2f} = {capacity[k]:.1f} sets"
         for k in worst
     )
     raise ValueError(
         f"disjoint matching requires every target age stratum to hold "
-        f"{replicates:,} sets' worth of candidates (replicates x quota), but "
-        f"{short.size} of {quotas.size} strata fall short; the scarcest are "
-        f"{detail}. A stratum that runs dry would be back-filled from other "
-        "ages, so later replicates would match progressively worse. "
-        "Prespecify fewer replicates or use an alternate null design; "
-        "controls will not be silently reused."
+        f"{replicates:,} sets' worth of candidate age mass (replicates x "
+        f"target mass), but {short.size} of {target_mass.size} strata fall "
+        f"short; the scarcest are {detail}. A stratum whose mass runs out "
+        "cannot be matched by later replicates, so they would match "
+        "progressively worse. Prespecify fewer replicates or use an alternate "
+        "null design; controls will not be silently reused."
     )
 
 
@@ -241,7 +279,7 @@ def stratified_initial_set(
     Candidates are assigned to a stratum by their median age, read off their
     CDF at the 21 boundary ages rather than on the full analysis grid, so this
     costs one narrow read per sampled candidate. The assignment is
-    `median_age_strata`, shared with the disjoint capacity preflight. A pool of `oversample` times
+    `median_age_strata`. A pool of `oversample` times
     the target size is drawn first; any stratum the draw underfills is topped up
     from the unused remainder, so the returned set always has exactly the
     required size even where the pool is thin.
@@ -821,6 +859,7 @@ def _write_outputs(
     eligibility_identity: dict,
     stratum_quotas: np.ndarray,
     stratum_counts: np.ndarray | None = None,
+    stratum_target_mass: np.ndarray | None = None,
     stratum_capacity: np.ndarray | None = None,
 ) -> None:
     if output.exists():
@@ -1042,12 +1081,16 @@ def _write_outputs(
             "maximum_control_reuse": int(reuse.max()),
             "vcf_eligibility_identity": eligibility_identity,
             "stratum_quotas": [int(q) for q in stratum_quotas],
-            # Candidates per median-age stratum / quota, measured before any
-            # replicate ran; null for strata with no quota and outside
-            # disjoint mode, where no preflight is needed.
-            "disjoint_stratum_candidates": (
+            # Candidate and target age mass per stratum, and their ratio,
+            # measured before any replicate ran; null outside disjoint mode,
+            # where no preflight is needed, and for strata with no target mass.
+            "disjoint_stratum_candidate_mass": (
                 None if stratum_counts is None
-                else [int(c) for c in stratum_counts]
+                else [float(c) for c in stratum_counts]
+            ),
+            "disjoint_stratum_target_mass": (
+                None if stratum_target_mass is None
+                else [float(c) for c in stratum_target_mass]
             ),
             "disjoint_stratum_capacity_sets": (
                 None if stratum_capacity is None
@@ -1105,7 +1148,7 @@ def run(args: argparse.Namespace) -> None:
     )
     if candidates.size <= target_rows.size:
         raise ValueError("candidate universe must exceed target set size")
-    stratum_counts = stratum_capacity = None
+    stratum_counts = stratum_target_mass = stratum_capacity = None
     if config.disjoint_replicates:
         required_candidates = config.replicates * target_rows.size
         if candidates.size < required_candidates:
@@ -1123,8 +1166,9 @@ def run(args: argparse.Namespace) -> None:
         # while the total pool still looks ample. Check every stratum before
         # any work directory or replicate state exists.
         scan_started = time.perf_counter()
-        stratum_counts, stratum_capacity = disjoint_stratum_capacity(
-            store, candidates, boundary_ages, quotas)
+        stratum_counts, stratum_target_mass, stratum_capacity = (
+            disjoint_stratum_capacity(
+                store, candidates, target_rows, boundary_ages))
         print(
             f"disjoint_stratum_capacity_sets min="
             f"{float(np.min(stratum_capacity)):.1f} "
@@ -1132,7 +1176,8 @@ def run(args: argparse.Namespace) -> None:
             flush=True,
         )
         check_disjoint_stratum_capacity(
-            stratum_counts, stratum_capacity, quotas, config.replicates)
+            stratum_counts, stratum_target_mass, stratum_capacity,
+            config.replicates)
     points = analysis_points(age_bins)
     exact_step = float(age_bins[1] - age_bins[0])
     if config.search_bin_width < exact_step:
@@ -1371,6 +1416,7 @@ def run(args: argparse.Namespace) -> None:
         eligibility_identity=eligibility_identity,
         stratum_quotas=quotas,
         stratum_counts=stratum_counts,
+        stratum_target_mass=stratum_target_mass,
         stratum_capacity=stratum_capacity,
     )
     if not args.keep_work:
@@ -1463,8 +1509,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "against the candidate universe minus every row already published, "
              "so no control SNP appears in two published sets. A preflight "
              "requires at least replicates x target-sites candidates in total "
-             "and replicates x quota candidates in every target age stratum "
-             "(by median age). This removes "
+             "and, in every target age stratum, replicates x the target's age "
+             "mass in candidate age mass. This removes "
              "shared membership, not statistical dependence: replicates still "
              "share the observed TE sample and the store, and later sets draw "
              "from a pool the earlier ones depleted",
