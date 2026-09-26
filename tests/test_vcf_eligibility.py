@@ -389,4 +389,56 @@ def test_snp_subset_excludes_zero_orientation_but_keeps_full_q(tmp_path):
     )
     assert result.rows.tolist() == [0, 1, 2]
     assert result.snp_rows.tolist() == [0, 2]
-    assert result.report["excluded_by_reason"]["snp_no_usable_orientation"] == 1
+    assert "snp_no_usable_orientation" not in result.report["excluded_by_reason"]
+    assert result.report["snp_excluded_by_reason"]["snp_no_usable_orientation"] == 1
+
+
+def test_excluded_by_reason_reconciles_against_eligible_and_snp_orientable_rows(tmp_path):
+    """Finding 10: `excluded_by_reason` must account only for rows dropped
+    from the callable mask, and `snp_excluded_by_reason` only for rows that
+    stay callable but are dropped from the SNP-orientable subset. This drives
+    one VCF through every reason branch at once and checks both reconciliation
+    identities in the eligibility report's own docstring/comment.
+    """
+    called20 = ["0"] * 19 + ["1"]
+    vcf = _write_vcf(tmp_path / "sites.vcf", [
+        _record(1, called20),                 # eligible + SNP-orientable
+        _record(2, ["0"] * 19 + ["0/1"]),      # excluded_by_reason: heterozygous_genotype
+        _record(3, called20),                  # eligible, but zero ancestral orientation
+        _record(4, called20, alt="N"),         # eligible, but non-ACGT ALT
+        _record(5, called20),                  # excluded_by_reason: store_ineligible
+        _record(9, called20),                  # absent from the store catalog entirely
+    ])
+    counts = np.zeros((5, 4), dtype=np.uint16)
+    counts[0, 0] = 3  # row 0 (position 1): REF=A ancestral, fully oriented
+    counts[2, 0] = 0  # row 2 (position 3): no ancestral draw orients it
+    counts[3, 0] = 3  # row 3 (position 4): oriented, but ALT="N" is non-ACGT
+    present = counts.sum(axis=1, dtype=np.uint16)
+    result = scan_vcf(
+        vcf, _store(), min_callable=20,
+        ancestral_counts=counts, present_draw_count=present,
+    )
+    report = result.report
+
+    assert report["vcf_records"] == 6
+    assert report["store_catalog_records"] == 5
+    assert report["excluded_by_reason"] == {
+        "heterozygous_genotype": 1,
+        "store_ineligible": 1,
+    }
+    assert report["snp_excluded_by_reason"] == {
+        "snp_no_usable_orientation": 1,
+        "snp_non_acgt_alleles": 1,
+    }
+    assert result.rows.tolist() == [0, 2, 3]
+    assert result.snp_rows.tolist() == [0]
+
+    # The two reconciliation identities.
+    assert (
+        report["store_catalog_records"] - sum(report["excluded_by_reason"].values())
+        == report["eligible_rows"]
+    )
+    assert (
+        report["eligible_rows"] - sum(report["snp_excluded_by_reason"].values())
+        == report["snp_orientable_rows"]
+    )

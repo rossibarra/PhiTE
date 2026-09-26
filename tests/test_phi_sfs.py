@@ -1,3 +1,4 @@
+import csv
 import gzip
 import hashlib
 import json
@@ -6,7 +7,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from normalize_tes import phi_sfs as phi_sfs_module
 from normalize_tes.phi_sfs import (
+    PROJECTION_SIZE,
+    RETAINED_BINS,
     SiteCount,
     accumulate_spectrum,
     calibrate_phi,
@@ -199,6 +203,20 @@ def test_phi_requires_explicit_grid_for_nondefault_spectra():
         phi_sfs(np.ones(3) / 3, np.ones(3) / 3)
 
 
+def test_phi_agrees_with_scipy_wasserstein_distance():
+    """`phi_sfs` is exactly a discrete Wasserstein-1 distance, not a lookalike."""
+    scipy_stats = pytest.importorskip("scipy.stats")
+    daf = RETAINED_BINS.astype(np.float64) / PROJECTION_SIZE
+    rng = np.random.default_rng(7)
+    for _ in range(10):
+        a = rng.random(daf.size)
+        a /= a.sum()
+        b = rng.random(daf.size)
+        b /= b.sum()
+        expected = scipy_stats.wasserstein_distance(daf, daf, a, b)
+        assert phi_sfs(a, b, daf=daf).value == pytest.approx(expected)
+
+
 # ----------------------------------------------------------- null calibration
 
 
@@ -310,8 +328,10 @@ def _write_bundle(
             np.arange(100, 100 + replicate_count, dtype=np.uint64), allow_pickle=False)
     np.save(matches / "bootstrap_counts.npy",
             np.ones((replicate_count, te_rows.size), dtype=np.uint32), allow_pickle=False)
+    unique_rows = np.unique(np.asarray(row_indices, dtype=np.int64))
+    np.save(matches / "reuse_row_indices.npy", unique_rows, allow_pickle=False)
     np.save(matches / "reuse_counts.npy",
-            np.ones(np.size(row_indices), dtype=np.uint16), allow_pickle=False)
+            np.ones(unique_rows.shape, dtype=np.uint16), allow_pickle=False)
 
     digest = _sha256_arrays(
         te_rows, cdf, ages, np.asarray([threshold], dtype=np.float64)
@@ -537,6 +557,25 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
     assert float(summary["p_value"]) == pytest.approx(1.0)
 
 
+def test_comparisons_reuse_columns_are_present_and_equal_one(tmp_path):
+    """A valid disjoint bundle has every control used exactly once, everywhere."""
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output) == 0
+
+    with (output / "comparisons.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["role"] == "observed"
+    assert rows[0]["left_max_control_reuse"] == ""
+    assert rows[0]["right_max_control_reuse"] == "1"
+    for row in rows[1:]:
+        assert row["role"] == "null"
+        assert row["left_max_control_reuse"] == "1"
+        assert row["right_max_control_reuse"] == "1"
+
+
 def test_vcf_sha256_matches_a_direct_digest(tmp_path):
     target, matches = _write_bundle(tmp_path)
     vcf = tmp_path / "sites.vcf"
@@ -593,6 +632,42 @@ def test_existing_output_is_never_overwritten(tmp_path):
     output.mkdir()
     with pytest.raises(FileExistsError):
         _run(target, matches, vcf, output)
+
+
+def test_calculate_is_byte_reproducible(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    out1 = tmp_path / "phi1"
+    out2 = tmp_path / "phi2"
+    assert _run(target, matches, vcf, out1) == 0
+    assert _run(target, matches, vcf, out2) == 0
+
+    names1 = sorted(path.name for path in out1.glob("*.npy"))
+    names2 = sorted(path.name for path in out2.glob("*.npy"))
+    assert names1 == names2
+    for name in names1:
+        assert (out1 / name).read_bytes() == (out2 / name).read_bytes(), name
+
+
+def test_injected_publish_failure_leaves_no_output_or_staging(tmp_path, monkeypatch):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    output = tmp_path / "phi"
+
+    def failing_dump(*args, **kwargs):
+        raise RuntimeError("injected failure")
+
+    # metadata.json is written last, after every .npy file and both CSVs, so
+    # this exercises cleanup of a staging directory that already holds output.
+    monkeypatch.setattr(phi_sfs_module.json, "dump", failing_dump)
+
+    with pytest.raises(RuntimeError, match="injected failure"):
+        _run(target, matches, vcf, output)
+
+    assert not output.exists()
+    assert list(output.parent.glob(f".{output.name}.tmp.*")) == []
 
 
 def test_end_to_end_snp_a_uses_posterior_polarity(tmp_path):
@@ -774,6 +849,157 @@ def test_a_failed_set_is_replaced_by_the_next_spare(tmp_path):
     metadata = json.loads((output / "metadata.json").read_text())
     assert metadata["matched_sets_failing_qc"] == 1
     assert metadata["unused_qc_passing_replicate_ids"] == []
+
+
+def _sensitivity_bundle(tmp_path):
+    """Five matched sets (ids 0-4).
+
+    A sensitivity rerun's own null set can then reach a set the primary run
+    never touches, exercising the requirement that every set any analysis
+    uses -- not just the primary accepted set -- gets scanned.
+    """
+    target, matches = _write_bundle(
+        tmp_path,
+        positions=np.array(
+            [[30, 40], [50, 60], [70, 80], [90, 100], [110, 120]]
+        ),
+        row_indices=np.array(
+            [[2, 3], [4, 5], [6, 7], [8, 9], [10, 11]], dtype=np.int64
+        ),
+    )
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(
+        _vcf_text()
+        + _record(90, 2) + "\n" + _record(100, 6) + "\n"
+        + _record(110, 5) + "\n" + _record(120, 9) + "\n"
+    )
+    table = _ancestral_table(
+        tmp_path,
+        positions=(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120),
+    )
+    return target, matches, vcf, table
+
+
+def test_reference_sensitivity_selection_and_primary_arrays_unchanged(tmp_path):
+    """With reference id 2, sensitivity N=2 must select ids 3 and 4.
+
+    Ascending, no wraparound. Each alternative's own null selection can reach
+    a set the primary run (accepted set {0, 1, 2}) never touches -- id 4's
+    rerun accepts {0, 1, 4}. Requesting sensitivity must not perturb any
+    primary array.
+    """
+    target, matches, vcf, table = _sensitivity_bundle(tmp_path)
+
+    out_plain = tmp_path / "phi_plain"
+    assert _run(
+        target, matches, vcf, out_plain,
+        "--reference-replicate", "2", "--ancestral-table", str(table),
+    ) == 0
+
+    out_sensitivity = tmp_path / "phi_sensitivity"
+    assert _run(
+        target, matches, vcf, out_sensitivity,
+        "--reference-replicate", "2", "--reference-sensitivity", "2",
+        "--ancestral-table", str(table),
+    ) == 0
+
+    for name in (
+        "observed_phi_sfs.npy", "null_phi_sfs.npy", "null_z_scores.npy",
+        "a_normalized_sfs.npy", "b_normalized_sfs.npy", "b_raw_sfs.npy",
+        "reference_replicate_id.npy", "null_replicate_id.npy",
+        "b_replicate_id.npy",
+    ):
+        np.testing.assert_array_equal(
+            np.load(out_plain / name), np.load(out_sensitivity / name)
+        )
+
+    def _summary(directory):
+        header, values = (
+            line.split(",") for line in (directory / "summary.csv").read_text().splitlines()
+        )
+        return dict(zip(header, values))
+
+    plain_summary = _summary(out_plain)
+    sensitivity_summary = _summary(out_sensitivity)
+    for key in ("observed_phi_sfs", "null_mean", "null_sample_sd", "z_score", "p_value"):
+        assert plain_summary[key] == sensitivity_summary[key]
+
+    ids = np.load(out_sensitivity / "sensitivity_reference_ids.npy")
+    assert ids.tolist() == [3, 4]
+    z_scores = np.load(out_sensitivity / "sensitivity_z_scores.npy")
+    p_values = np.load(out_sensitivity / "sensitivity_p_values.npy")
+    observed = np.load(out_sensitivity / "sensitivity_observed_phi_sfs.npy")
+    assert z_scores.shape == (2,)
+    assert p_values.shape == (2,)
+    assert observed.shape == (2,)
+
+    metadata = json.loads((out_sensitivity / "metadata.json").read_text())
+    assert metadata["reference_sensitivity_run"] is True
+    assert metadata["reference_sensitivity_n"] == 2
+    assert metadata["reference_sensitivity_reference_ids"] == [3, 4]
+
+    plain_metadata = json.loads((out_plain / "metadata.json").read_text())
+    assert plain_metadata["reference_sensitivity_run"] is False
+    assert plain_metadata["reference_sensitivity_n"] == 0
+
+    header, values = (
+        line.split(",")
+        for line in (out_sensitivity / "summary.csv").read_text().splitlines()
+    )
+    summary = dict(zip(header, values))
+    assert summary["reference_sensitivity_n"] == "2"
+    assert float(summary["reference_sensitivity_z_min"]) == pytest.approx(
+        float(min(z_scores))
+    )
+    assert float(summary["reference_sensitivity_z_max"]) == pytest.approx(
+        float(max(z_scores))
+    )
+    assert float(summary["reference_sensitivity_p_min"]) == pytest.approx(
+        float(min(p_values))
+    )
+    assert float(summary["reference_sensitivity_p_max"]) == pytest.approx(
+        float(max(p_values))
+    )
+
+
+def test_reference_sensitivity_fails_if_too_few_follow(tmp_path):
+    """Only id 4 follows id 3, and wraparound to ids 0-2 is not allowed."""
+    target, matches, vcf, table = _sensitivity_bundle(tmp_path)
+    with pytest.raises(ValueError, match="QC-passing replicates follow"):
+        _run(
+            target, matches, vcf, tmp_path / "phi",
+            "--reference-replicate", "3", "--reference-sensitivity", "5",
+            "--ancestral-table", str(table),
+        )
+
+
+def test_reference_sensitivity_defaults_to_zero_and_publishes_empty_arrays(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output) == 0
+
+    header, values = (
+        line.split(",") for line in (output / "summary.csv").read_text().splitlines()
+    )
+    summary = dict(zip(header, values))
+    assert summary["reference_sensitivity_n"] == "0"
+    assert summary["reference_sensitivity_z_min"] == ""
+    assert summary["reference_sensitivity_z_max"] == ""
+    assert summary["reference_sensitivity_p_min"] == ""
+    assert summary["reference_sensitivity_p_max"] == ""
+
+    for name in (
+        "sensitivity_reference_ids.npy", "sensitivity_observed_phi_sfs.npy",
+        "sensitivity_z_scores.npy", "sensitivity_p_values.npy",
+    ):
+        assert np.load(output / name).shape == (0,)
+
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["reference_sensitivity_run"] is False
+    assert metadata["reference_sensitivity_n"] == 0
+    assert metadata["reference_sensitivity_reference_ids"] == []
 
 
 def test_equal_eligible_site_count_is_enforced(tmp_path):

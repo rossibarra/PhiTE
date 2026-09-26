@@ -10,7 +10,7 @@ from typing import Any
 
 
 PROJECT_NAME = "PhiTE"
-PROJECT_VERSION = "0.7.0"
+PROJECT_VERSION = "0.8.0"
 
 
 def _git(repo_root: Path, *arguments: str) -> str | None:

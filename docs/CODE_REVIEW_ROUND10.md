@@ -45,6 +45,9 @@ The pipeline is not ready for a production run. Three problems come first:
 | 5 | Skipped by decision. | won't fix |
 | 6 | TEs with no usable draws are discarded and counted in `sites_with_no_usable_draw`. The existing tests cover this. | implemented |
 | 7 | Measured with `tools/benchmark_phi_sfs_scale.py` (synthetic, 1201 sets): peak 2.5 GiB and about 1.4 min at M = 4,067; 11.2 GiB and about 4 min at M = 19,000. This is within 48G / 6 h. The VCF scan and ancestral-table memory were not measured, so a real end-to-end run is still needed. | partly done |
+| 8 | Implemented: `--reference-sensitivity`, per-row reuse columns, the byte-reproducibility and injected-failure tests (the scipy cross-check is written but skipped because scipy is not in the environment), `normalize_tes.phi_contrast`, the calibration simulation study ([PHI_SFS_CALIBRATION_VALIDATION.md](PHI_SFS_CALIBRATION_VALIDATION.md)), and the CHANGELOG entry and v0.8.0 bump. The study finds the test correctly sized under an exchangeable null. In stylised models, however, the TE-versus-SNP polarity difference produces false signals. | implemented |
+| 9 | VCF reading and genotype decoding are in `normalize_tes.vcf_io`, shared by the eligibility scan and `phi_sfs`. The scan parses CHROM and POS first. | implemented |
+| 10 | Removed the dead schema entry and the duplicate row loads, fixed the docstrings, and split the eligibility exclusion counts. | implemented |
 
 ## Findings
 

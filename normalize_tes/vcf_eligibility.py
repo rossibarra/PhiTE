@@ -12,9 +12,7 @@ by their respective upstream/downstream components.
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -25,11 +23,17 @@ import numpy as np
 
 from .release_provenance import software_provenance
 from .snp_age_store import open_snp_age_store, store_schema
+from .vcf_io import (
+    COMPRESSED_SUFFIXES,
+    _HashingStream,
+    _open_vcf,
+    decode_inbred_genotype,
+    drain,
+)
 
 
 SCHEMA_VERSION = "vcf-eligibility-v1"
 DEFAULT_MIN_CALLABLE = 20
-COMPRESSED_SUFFIXES = (".gz", ".bgz", ".bgzf")
 
 
 def _sha256_array(values: np.ndarray) -> str:
@@ -39,58 +43,6 @@ def _sha256_array(values: np.ndarray) -> str:
     digest.update(str(array.shape).encode("utf-8"))
     digest.update(array.tobytes())
     return digest.hexdigest()
-
-
-class _HashingStream(io.RawIOBase):
-    """Digest compressed input bytes while the text decoder consumes them."""
-
-    def __init__(self, handle):
-        self._handle = handle
-        self.digest = hashlib.sha256()
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, buffer) -> int:
-        count = self._handle.readinto(buffer)
-        if count:
-            self.digest.update(memoryview(buffer)[:count])
-        return count
-
-    def close(self) -> None:
-        try:
-            self._handle.close()
-        finally:
-            super().close()
-
-
-def _open_vcf(path: Path):
-    hashing = _HashingStream(path.open("rb"))
-    buffered = io.BufferedReader(hashing, buffer_size=1 << 20)
-    stream = (
-        gzip.GzipFile(fileobj=buffered)
-        if path.suffix.lower() in COMPRESSED_SUFFIXES
-        else buffered
-    )
-    return io.TextIOWrapper(stream, encoding="utf-8"), hashing, buffered
-
-
-def decode_inbred_genotype(gt: str, heterozygous: str) -> int | None | str:
-    """Return 0/1, ``None`` for missing, or an eligibility failure reason."""
-    alleles = gt.replace("|", "/").split("/")
-    if not alleles or any(allele == "." for allele in alleles):
-        return None
-    values: list[int] = []
-    for allele in alleles:
-        if not allele.isdigit():
-            return "invalid_genotype"
-        value = int(allele)
-        if value not in (0, 1):
-            return "non_biallelic_genotype"
-        values.append(value)
-    if len(set(values)) > 1:
-        return None if heterozygous == "missing" else "heterozygous_genotype"
-    return values[0]
 
 
 @dataclass(frozen=True)
@@ -208,6 +160,7 @@ def scan_vcf(
     q_values: list[float] = []
     seen: set[int] = set()
     reasons: dict[str, int] = {}
+    snp_reasons: dict[str, int] = {}
     records = relevant = 0
     genotype_cache: dict[str, int | None | str] = {}
     handle, hashing, buffered = _open_vcf(Path(vcf))
@@ -216,12 +169,16 @@ def scan_vcf(
             if raw.startswith("#"):
                 continue
             records += 1
-            fields = raw.rstrip("\n").split("\t")
-            if len(fields) < 2:
-                raise ValueError(f"{vcf}:{line_number}: malformed VCF record")
-            chrom = fields[0]
+            # Only CHROM and POS are parsed for a record that turns out not to
+            # be in the catalog. Splitting every sample column of every record
+            # dominates scan time on a sample-rich VCF; a catalog lookup on two
+            # fields is cheap and rejects most records before that cost.
             try:
-                position = int(fields[1])
+                chrom, position_text, rest = raw.split("\t", 2)
+            except ValueError:
+                raise ValueError(f"{vcf}:{line_number}: malformed VCF record") from None
+            try:
+                position = int(position_text)
             except ValueError as error:
                 raise ValueError(f"{vcf}:{line_number}: invalid POS") from error
             chrom_info = chromosomes.get(chrom)
@@ -241,24 +198,27 @@ def scan_vcf(
             if not store_eligible[row]:
                 reasons["store_ineligible"] = reasons.get("store_ineligible", 0) + 1
                 continue
-            if len(fields) < 10:
+            # ID, REF, ALT, QUAL, FILTER, INFO, FORMAT, then sample columns.
+            rest_fields = rest.rstrip("\n").split("\t")
+            if len(rest_fields) < 8:
                 reasons["missing_samples_or_format"] = (
                     reasons.get("missing_samples_or_format", 0) + 1
                 )
                 continue
-            if "," in fields[4]:
+            ref, alt, formats = rest_fields[1], rest_fields[2], rest_fields[6]
+            if "," in alt:
                 reasons["multiallelic_record"] = (
                     reasons.get("multiallelic_record", 0) + 1
                 )
                 continue
-            format_fields = fields[8].split(":")
+            format_fields = formats.split(":")
             if "GT" not in format_fields:
                 reasons["missing_gt"] = reasons.get("missing_gt", 0) + 1
                 continue
             gt_index = format_fields.index("GT")
             alt_count = callable_count = 0
             failure: str | None = None
-            for sample in fields[9:]:
+            for sample in rest_fields[7:]:
                 parts = sample.split(":")
                 gt = parts[gt_index] if gt_index < len(parts) else "."
                 allele = genotype_cache.get(gt)
@@ -284,10 +244,12 @@ def scan_vcf(
             alt_counts.append(alt_count)
             callable_counts.append(callable_count)
             if ancestral_counts is not None:
-                ref, alt = fields[3], fields[4]
+                # These two reasons remove a row only from the SNP-orientable
+                # subset; the row stays callable and remains in row_indices.npy,
+                # so they are counted separately from `reasons` above.
                 if ref not in "ACGT" or alt not in "ACGT":
-                    reasons["snp_non_acgt_alleles"] = (
-                        reasons.get("snp_non_acgt_alleles", 0) + 1
+                    snp_reasons["snp_non_acgt_alleles"] = (
+                        snp_reasons.get("snp_non_acgt_alleles", 0) + 1
                     )
                     continue
                 counts = ancestral_counts[row]
@@ -301,17 +263,13 @@ def scan_vcf(
                 alt_calls = int(counts["ACGT".index(alt)])
                 oriented = ref_calls + alt_calls
                 if oriented == 0:
-                    reasons["snp_no_usable_orientation"] = (
-                        reasons.get("snp_no_usable_orientation", 0) + 1
+                    snp_reasons["snp_no_usable_orientation"] = (
+                        snp_reasons.get("snp_no_usable_orientation", 0) + 1
                     )
                     continue
                 snp_rows.append(row)
                 q_values.append(ref_calls / oriented)
-        # Text and gzip layers can stop before the buffered reader has consumed
-        # the physical EOF. Drain it while still open so the digest always
-        # covers every compressed input byte, including trailing gzip members.
-        while buffered.read(1 << 20):
-            pass
+        drain(buffered)
     finally:
         handle.close()
     digest = hashing.digest.hexdigest()
@@ -337,7 +295,14 @@ def scan_vcf(
         "store_catalog_records": relevant,
         "eligible_rows": int(row_array.size),
         "snp_orientable_rows": int(snp_array.size),
+        # `excluded_by_reason` accounts only for rows dropped from the
+        # callable mask: store_catalog_records - sum(excluded_by_reason) ==
+        # eligible_rows. `snp_excluded_by_reason` accounts for rows that stay
+        # callable (and remain in row_indices.npy) but are dropped from the
+        # SNP-orientable subset: eligible_rows - sum(snp_excluded_by_reason)
+        # == snp_orientable_rows.
         "excluded_by_reason": reasons,
+        "snp_excluded_by_reason": snp_reasons,
         "store_content_sha256": (getattr(store, "metadata", {}) or {}).get(
             "content_sha256"
         ),

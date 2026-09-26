@@ -1,5 +1,76 @@
 # Changelog
 
+## v0.8.0 — 2026-09-25
+
+This release renames the project to PhiTE and replaces the Phi-SFS statistic.
+Phi-SFS outputs from earlier versions use a different schema and cannot be
+combined with v0.8.0 results.
+
+### Phi-SFS is a calibrated Wasserstein distance
+
+`normalize_tes.phi_sfs` now computes Phi-SFS as the first Wasserstein distance
+between the projected, normalized, unfolded SFS of focal set A and a fixed,
+prespecified matched SNP set B0. It calibrates that distance against R null
+distances from other matched sets B_i to B0, reporting the null mean, the
+sample SD, a Z-score and a one-sided add-one Monte Carlo P-value. The output
+schema is `phi-sfs-wasserstein-v1`. A may be TEs or SNPs (`-A TE|SNP`), so
+SNP-versus-SNP negative controls use the same code path.
+
+- R is fixed at 1000 in every category, so all categories are calibrated with
+  equal precision. The matcher publishes 1201 disjoint sets by default: B0,
+  1000 nulls and 200 spares. `--null-replicates R` takes B0 plus the first R
+  QC-passing sets in replicate-ID order and fails if fewer pass. QC depends
+  only on age matching, so this selection cannot depend on the SFS.
+- `--reference-sensitivity N` repeats the calibration with the next N
+  QC-passing sets as alternative references, chosen before the SFS scan.
+- The new `normalize_tes.phi_contrast` compares categories. It computes the
+  contrast Z1 - Z2 with a seeded pairing of the two null distributions, reports
+  a two-sided add-one P-value and its range over repeated pairings, and adjusts
+  for multiple comparisons with Holm and Benjamini-Hochberg.
+  `slurm/run_phi_contrast.sbatch` launches it.
+
+### Eligibility is fixed before matching and bound by content
+
+`normalize_tes.vcf_eligibility` scans the analysis VCF once and publishes the
+store rows with at least 20 callable individuals. For SNPs it also records the
+subset with a usable ARG orientation and each SNP's posterior orientation
+probability q. The TE target, the SNP candidate universe and Phi-SFS all use
+this one artifact, so A and every B set keep exactly M sites; Phi-SFS asserts
+this rather than dropping sites after matching.
+
+The artifact is identified by content: the VCF digest, its array digests, the
+heterozygous policy and the callability threshold. That identity is recorded
+in the target, the candidate report and the match bundle. The matcher, its
+launcher and Phi-SFS check it, and Phi-SFS also compares the digest of the VCF
+it scans with the recorded one.
+
+### Stricter inputs to matching and Phi-SFS
+
+- The matcher and Phi-SFS both check the declared A type against the target.
+  A TE target must carry the TE polarity filter at `max_flipped_fraction` 0.5,
+  and a SNP target must not.
+- TEs with no usable orientation draw are now discarded by the at-least-50%
+  derived rule rather than kept.
+- In disjoint mode, the matcher checks capacity in every age stratum, as well
+  as the total pool size, before any replicate work begins, and records it in
+  the bundle metadata. With `candidate-rows-75draw.npy`, the in-gene target
+  fails this check at 1201 sets. Its youngest stratum holds about 357 sets'
+  worth of candidates.
+
+### Other changes
+
+- VCF reading, hashing and genotype decoding live in one module,
+  `normalize_tes.vcf_io`, shared by the eligibility scan and Phi-SFS.
+- The eligibility report separates rows excluded from the callable mask from
+  rows excluded only from the SNP-orientable subset.
+- `tools/benchmark_phi_sfs_scale.py` measures Phi-SFS memory at production
+  scale. At 1201 sets of 19,000 sites, peak memory was 11.2 GiB.
+- `tools/validate_phi_calibration.py` and
+  [PHI_SFS_CALIBRATION_VALIDATION.md](PHI_SFS_CALIBRATION_VALIDATION.md)
+  record a simulation study of the test's calibration.
+- The project name in documentation and software provenance is now PhiTE. The
+  conda environment name and the frozen hash-salt identifiers are unchanged.
+
 ## v0.7.0 — 2026-09-01
 
 ### Draws are authenticated by content, not by file path

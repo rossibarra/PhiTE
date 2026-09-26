@@ -1,4 +1,4 @@
-# PhiTE v0.7.0
+# PhiTE v0.8.0
 
 PhiTE builds neutral SNP control sets matched to the posterior ages of a focal
 variant category, then compares their unfolded site-frequency spectra. Dataset A may
@@ -395,12 +395,25 @@ python -m normalize_tes.phi_sfs \
 | `-B`, `--b-type` | control type; currently `SNP` only |
 | `--reference-replicate` | prespecified matched replicate held fixed as $B_0$ |
 | `--null-replicates` | exact null count $R$: the first $R$ QC-passing non-reference sets in replicate-ID order; fails if fewer pass; default 1000 |
+| `--reference-sensitivity` | optionally repeat calibration for $N$ additional alternative references: the next $N$ QC-passing replicate IDs after `--reference-replicate`, in replicate-ID order, no wraparound; fails if fewer follow; default 0 |
 | `--output` | new Phi-SFS result directory |
 
 The default rejects heterozygous calls. Use `--heterozygous missing` only when the
 eligibility artifact was built with the same policy. Eligibility is fixed upstream;
 the calculation asserts that A and every accepted B set retain exactly the same $M$
 sites rather than silently dropping or downsampling sites.
+
+`--reference-sensitivity` reruns the primary selection rule once per alternative
+reference (each gets its own first-$R$-QC-passing non-reference null set, so the
+primary $B_0$ can become a null in that rerun) and publishes
+`sensitivity_reference_ids.npy`, `sensitivity_observed_phi_sfs.npy`,
+`sensitivity_z_scores.npy`, and `sensitivity_p_values.npy`, plus
+`reference_sensitivity_n`/`_z_min`/`_z_max`/`_p_min`/`_p_max` columns in
+`summary.csv` (empty when $N=0$). Primary outputs are unaffected by requesting it.
+`comparisons.csv` also reports `left_max_control_reuse` and
+`right_max_control_reuse`, each set's largest global control-reuse count from the
+match bundle's `reuse_row_indices.npy`/`reuse_counts.npy` (empty for A; all 1 in a
+valid disjoint bundle).
 
 #### Wasserstein definition
 
