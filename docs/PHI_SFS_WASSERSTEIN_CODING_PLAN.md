@@ -85,17 +85,19 @@ when $q\le0.5$. Draws that cannot orient either observed allele remain an ARG
 quality/missing-orientation issue and must be counted separately rather than
 treated as evidence for either direction.
 
-Use $R=1000$ for the initial production default, fixed in every category so that all
-categories are calibrated with equal precision. The matcher publishes $R+1+K$ sets,
-with $K=200$ spares by default (1201 sets). $B_0$ must pass matching QC; the nulls
-are the first $R$ QC-passing non-reference sets in replicate-ID order, and the run
-fails if fewer than $R$ pass. QC is age-only, so this selection is SFS-blind. The
-minimum add-one P-value is $1/1001$ in every category. (Decided 2026-09-25 in
-response to CODE_REVIEW_ROUND10 Finding 2; the recent disjoint bundle passed QC in
-95/100 sets, so publishing exactly $R+1$ sets would almost never complete.)
+The matcher publishes 1001 disjoint sets. $B_0$ is drawn uniformly from the
+QC-passing sets with a seed derived from `--reference-seed` and the target digest,
+and every other QC-passing set is a null, so $R$ is whatever passes QC. The run
+fails if $R$ is below a floor fixed in advance (900 by default). The add-one
+P-value $(1+\#\{D_i^0\ge D_{\mathrm{obs}}\})/(R+1)$ is valid for any $R$ chosen
+without reference to the SFS; QC depends only on age matching. (Decided 2026-09-26.
+This replaces the earlier fixed $R=1000$ with 200 spare sets, because the in-gene
+target's youngest ages hold only about 1,045 disjoint sets' worth of candidate age
+mass, so 1201 disjoint sets do not fit.)
 
-Designate one of these identically generated sets as $B_0$ before examining any
-SFS. The remaining sets are $B_1,\ldots,B_R$. $B_0$ is special only because it
+Draw one of these identically generated sets as $B_0$ before examining any
+SFS; replicate 0 is avoided by default because it is matched first, from the
+undepleted pool. The remaining sets are $B_1,\ldots,B_R$. $B_0$ is special only because it
 is held fixed in the distance calculations; it is not matched to a different
 age target and does not use a different candidate pool or algorithm.
 
@@ -361,11 +363,10 @@ Keep the current required inputs and add:
 
 - `-A/--a-type {TE,SNP}`: focal dataset type, default `TE`;
 - `-B/--b-type {SNP}`: control dataset type, default `SNP`;
-- `--reference-replicate ID`: optional explicit $B_0$ identifier, defaulting to
-  a prespecified replicate such as ID 0;
-- `--null-replicates N`: the exact null count $R$ (first $N$ QC-passing
-  non-reference sets in replicate-ID order), default 1000 for production, with an explicit
-  override for tests and pilots; and
+- `--reference-seed S` (default 1002) and optional `--reference-replicate ID`:
+  $B_0$ is a seeded uniform draw from the QC-passing sets unless an ID is given;
+- `--min-null-replicates N`: the floor on $R$, default 900 for production, with
+  an explicit override for tests and pilots; and
 - `--reference-sensitivity N`: optionally repeat calibration for $N$ additional
   prespecified reference sets.
 

@@ -101,11 +101,14 @@ def contrast(
 ) -> ContrastResult:
     """Contrast two categories' observed Z-scores against a random null pairing.
 
-    ``delta_obs = z1 - z2``. The null pairing draws ``pairing = rng.permutation(R)``
-    from the caller's generator and sets
-    ``null_delta[i] = null1[pairing[i]] - null2[i]`` for every replicate index
-    ``i`` -- a prespecified deterministic random pairing, since the two
-    categories' null replicates carry no shared identity. The two-sided add-one
+    ``delta_obs = z1 - z2``. With ``R = min(R1, R2)``, the null pairing draws
+    ``pairing = rng.permutation(R1)[:R]`` from the caller's generator and sets
+    ``null_delta[i] = null1[pairing[i]] - null2[i]`` -- a prespecified
+    deterministic random pairing, since the two categories' null replicates
+    carry no shared identity. When the second category has more replicates
+    than the first, a random subset of R of them is drawn from the same
+    generator (``rng.permutation(R2)[:R]``) and paired in that order. With
+    equal R this reduces exactly to a permutation of the first side. The two-sided add-one
     P-value counts null contrasts with ``abs(null_delta) >= abs(delta_obs)``,
     so an exact tie counts as an exceedance, and applies the add-one correction
     to numerator and denominator so the minimum attainable P-value is
@@ -126,20 +129,16 @@ def contrast(
         raise ValueError("observed Z-scores must be finite")
     if null1.ndim != 1 or null2.ndim != 1:
         raise ValueError("null Z-score vectors must be one-dimensional")
-    if null1.shape != null2.shape:
-        raise ValueError(
-            f"null Z-score vectors must have equal length (equal R); got "
-            f"{null1.size} and {null2.size}"
-        )
-    if null1.size < 1:
+    if null1.size < 1 or null2.size < 1:
         raise ValueError("at least one null replicate is required")
     if not np.all(np.isfinite(null1)) or not np.all(np.isfinite(null2)):
         raise ValueError("null Z-score vectors must be finite")
 
-    r = null1.size
+    r = min(null1.size, null2.size)
     delta_obs = z1 - z2
-    pairing = rng.permutation(r)
-    null_delta = null1[pairing] - null2
+    pairing = rng.permutation(null1.size)[:r]
+    second = rng.permutation(null2.size)[:r] if null2.size > r else np.arange(r)
+    null_delta = null1[pairing] - null2[second]
     exceedances = int(np.count_nonzero(np.abs(null_delta) >= abs(delta_obs)))
     p_value = (1.0 + exceedances) / (r + 1.0)
     return ContrastResult(delta_obs, null_delta, pairing, p_value, exceedances)
@@ -376,13 +375,8 @@ def calculate(args: argparse.Namespace) -> None:
         detail = ", ".join(f"{c.label}={c.b_type}" for c in categories)
         raise ValueError(f"all --result categories must share one b_type; got {detail}")
 
-    replicate_counts = {category.accepted_null_replicates for category in categories}
-    if len(replicate_counts) != 1:
-        detail = ", ".join(f"{c.label}={c.accepted_null_replicates}" for c in categories)
-        raise ValueError(
-            f"all --result categories must share one R (accepted_null_replicates); got {detail}"
-        )
-    null_replicates = int(next(iter(replicate_counts)))
+    # Categories may carry different R (every QC-passing null is used); each
+    # pair is contrasted over min(R1, R2) randomly paired replicates.
 
     a_types = {category.a_type for category in categories}
     a_type_consistent = len(a_types) == 1
@@ -445,7 +439,9 @@ def calculate(args: argparse.Namespace) -> None:
             "a_type1": c1.a_type,
             "a_type2": c2.a_type,
             "b_type": c1.b_type,
-            "r": null_replicates,
+            "r1": c1.accepted_null_replicates,
+            "r2": c2.accepted_null_replicates,
+            "r": min(c1.accepted_null_replicates, c2.accepted_null_replicates),
             "z1": c1.z_score,
             "z2": c2.z_score,
             "delta_obs": float(primary_delta_obs),
@@ -493,11 +489,16 @@ def calculate(args: argparse.Namespace) -> None:
             "pairing_repeats": int(args.pairing_repeats),
             "primary_repeat_index": 0,
             "b_type": next(iter(b_types)),
-            "accepted_null_replicates": null_replicates,
+            "accepted_null_replicates": {
+                category.label: category.accepted_null_replicates
+                for category in categories
+            },
             "a_type_consistent": a_type_consistent,
             "delta_obs_formula": "Z_{A1} - Z_{A2}",
             "null_delta_formula": (
-                "null1[pairing] - null2, where pairing = rng.permutation(R) and rng "
+                "null1[pairing] - null2[second] over R = min(R1, R2) pairs, where "
+                "pairing = rng.permutation(R1)[:R], second = rng.permutation(R2)[:R] "
+                "when R2 > R (else all of null2), and rng "
                 "is seeded from derive_seed(seed, label1, label2, repeat); evaluated "
                 "in label-sorted order and sign-flipped to match the reporting order "
                 "of (label1, label2), so P is exactly invariant to which label is "
@@ -508,7 +509,7 @@ def calculate(args: argparse.Namespace) -> None:
                 "|{repeat}'.encode()).digest()[:8], 'big')"
             ),
             "p_value_tail_rule": "abs(null_delta) >= abs(delta_obs), two-sided",
-            "p_value_formula": "(1 + exceedances) / (R + 1)",
+            "p_value_formula": "(1 + exceedances) / (R + 1), R = min(R1, R2)",
             "primary_p_is_repeat": 0,
             "sensitivity_p_summary": "min/median/max of P over --pairing-repeats independent pairings",
             "multiplicity_correction": {

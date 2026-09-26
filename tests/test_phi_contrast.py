@@ -46,9 +46,31 @@ def test_contrast_minimum_p_is_one_over_r_plus_one():
     assert result.p_value == pytest.approx(1 / 4)
 
 
-def test_contrast_rejects_mismatched_length_and_nonfinite():
-    with pytest.raises(ValueError, match="equal length"):
-        contrast(1.0, 0.0, np.array([0.0, 1.0]), np.array([0.0]), np.random.default_rng(0))
+def test_contrast_with_unequal_r_uses_min_r_pairs():
+    """Five and three null replicates give three pairs and P over 3 + 1."""
+    null1 = np.array([0.0, 0.1, 0.2, 0.3, 0.4])
+    null2 = np.array([0.0, 0.0, 0.0])
+    result = contrast(100.0, 0.0, null1, null2, np.random.default_rng(4))
+    assert result.null_delta.shape == (3,)
+    assert len(set(result.pairing.tolist())) == 3
+    assert result.p_value == pytest.approx(1 / 4)
+    swapped = contrast(0.0, 100.0, null2, null1, np.random.default_rng(4))
+    assert swapped.null_delta.shape == (3,)
+    assert swapped.p_value == pytest.approx(1 / 4)
+
+
+def test_contrast_with_equal_r_is_a_permutation_of_the_first_side():
+    null1 = np.array([0.5, -0.5, 1.5, 2.0])
+    null2 = np.array([0.1, 0.2, 0.3, 0.4])
+    result = contrast(1.0, 0.0, null1, null2, np.random.default_rng(9))
+    expected = np.random.default_rng(9).permutation(4)
+    np.testing.assert_array_equal(result.pairing, expected)
+    np.testing.assert_allclose(result.null_delta, null1[expected] - null2)
+
+
+def test_contrast_rejects_empty_and_nonfinite():
+    with pytest.raises(ValueError, match="at least one"):
+        contrast(1.0, 0.0, np.array([0.0]), np.array([]), np.random.default_rng(0))
     with pytest.raises(ValueError, match="finite"):
         contrast(float("nan"), 0.0, np.array([0.0]), np.array([0.0]), np.random.default_rng(0))
     with pytest.raises(ValueError, match="finite"):
@@ -247,7 +269,7 @@ def test_cli_end_to_end_writes_expected_outputs(tmp_path):
     metadata = json.loads((output / "metadata.json").read_text())
     assert metadata["schema_version"] == SCHEMA_VERSION
     assert metadata["complete"] is True
-    assert metadata["accepted_null_replicates"] == 20
+    assert metadata["accepted_null_replicates"] == {"A": 20, "B": 20}
     assert metadata["pairing_repeats"] == 10
     assert len(metadata["inputs"]) == 2
 
@@ -271,14 +293,20 @@ def test_cli_end_to_end_writes_expected_outputs(tmp_path):
     assert null_values.shape == (20,)
 
 
-def test_cli_rejects_mismatched_r(tmp_path):
+def test_cli_contrasts_categories_with_different_r(tmp_path):
     a_dir = _write_result(tmp_path / "A", z_score=1.0, null_z_scores=_rng_null(1, 10))
     b_dir = _write_result(tmp_path / "B", z_score=1.0, null_z_scores=_rng_null(2, 20))
     output = tmp_path / "out"
     argv = ["--result", f"A={a_dir}", "--result", f"B={b_dir}", "--output", str(output)]
-    with pytest.raises(ValueError, match="one R"):
-        main(argv)
-    assert not output.exists()
+    assert main(argv) == 0
+    header, values = (
+        line.split(",") for line in (output / "contrasts.csv").read_text().splitlines()
+    )
+    row = dict(zip(header, values))
+    assert (row["r1"], row["r2"], row["r"]) == ("10", "20", "10")
+    assert float(row["p"]) >= 1 / 11
+    null_file = output / row["null_contrasts_file"]
+    assert np.load(null_file).shape == (10,)
 
 
 def test_cli_rejects_wrong_schema(tmp_path):

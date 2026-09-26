@@ -316,7 +316,7 @@ python -m normalize_tes.bootstrap_target_matcher \
   --output "$MATCHES" \
   --work-dir "$WORK_DIR" \
   --resume \
-  --replicates 1201 \
+  --replicates 1001 \
   --restarts 3 \
   --disjoint-replicates \
   --seed 1002
@@ -342,7 +342,7 @@ Matcher flags:
 | `--output` | new matched-control bundle |
 | `--work-dir` | durable per-replicate state used by `--resume` |
 | `--resume` | continue an interrupted compatible run |
-| `--replicates` | total matched control sets; production uses 1201: one reference, 1000 nulls, and 200 spares that replace sets failing matching QC |
+| `--replicates` | total matched control sets; production uses 1001, from which Phi-SFS draws $B_0$ and takes every other QC-passing set as a null |
 | `--restarts` | optimization restarts per control set |
 | `--disjoint-replicates` | prevent reuse of a control SNP between published sets |
 | `--seed` | matching random seed |
@@ -380,8 +380,8 @@ python -m normalize_tes.phi_sfs \
   --ancestral-table "$ANCESTRAL" \
   -A "$A_TYPE" \
   -B "$B_TYPE" \
-  --reference-replicate 0 \
-  --null-replicates 1000 \
+  --reference-seed 1002 \
+  --min-null-replicates 900 \
   --output "$PHI"
 ```
 
@@ -393,9 +393,10 @@ python -m normalize_tes.phi_sfs \
 | `--ancestral-table` | store-aligned posterior ancestral-state table |
 | `-A`, `--a-type` | focal type: `TE` (default) or `SNP` |
 | `-B`, `--b-type` | control type; currently `SNP` only |
-| `--reference-replicate` | prespecified matched replicate held fixed as $B_0$ |
-| `--null-replicates` | exact null count $R$: the first $R$ QC-passing non-reference sets in replicate-ID order; fails if fewer pass; default 1000 |
-| `--reference-sensitivity` | optionally repeat calibration for $N$ additional alternative references: the next $N$ QC-passing replicate IDs after `--reference-replicate`, in replicate-ID order, no wraparound; fails if fewer follow; default 0 |
+| `--reference-seed` | seed, combined with the target digest, for drawing $B_0$ uniformly from the QC-passing sets; default 1002 |
+| `--reference-replicate` | optional explicit $B_0$ replicate ID, overriding the draw |
+| `--min-null-replicates` | floor on $R$: every QC-passing non-reference set is a null, and the run fails if fewer than this pass; default 900 |
+| `--reference-sensitivity` | optionally repeat calibration with $N$ alternative references, the next $N$ sets of the same seeded permutation; default 0 |
 | `--output` | new Phi-SFS result directory |
 
 The default rejects heterozygous calls. Use `--heterozygous missing` only when the
@@ -485,22 +486,25 @@ sampling floor separately for every focal category rather than comparing raw
    \mathbf{1}\!\left(D_i^0\ge D_{\mathrm{obs}}\right)}{R+1}.
    $$
 
-The matcher publishes $R+1+K$ sets, with $K=200$ spares in production, so that $R$
-stays fixed at 1000 in every category even when some sets fail matching QC. Phi-SFS
-uses $B_0$ plus the first $R$ QC-passing sets in replicate-ID order and records the
-unused spares. QC is computed only from age matching and does not directly inspect the
+The matcher publishes 1001 disjoint sets. Phi-SFS draws $B_0$ uniformly from the
+sets that pass matching QC, with a seed derived from `--reference-seed` and the
+target digest, and uses every other QC-passing set as a null, so $R$ is whatever
+passes QC and may differ between categories. A floor fixed before the run
+(`--min-null-replicates`, 900 by default) guards against a coarse P-value. The
+add-one P-value is valid for any such $R$. QC is computed only from age matching and does not directly inspect the
 SFS. However, because allele age and allele frequency are related, selection on
 age-matching QC is not guaranteed to be neutral with respect to the resulting SFS.
 This is an inherent limitation of the selection scheme and should be considered when
 interpreting calibrated results. All published sets must be globally disjoint.
 Thus every control SNP has maximum reuse one and every $B_i$ has zero overlap with
-$B_0$. Set 0 is designated as $B_0$ before any SFS is examined; it differs from the
+$B_0$. $B_0$ is drawn before any SFS is examined, so it is exchangeable with the
+other QC-passing sets. Replicate 0 is not used by default because it is matched
+first, from the undepleted pool, and so is not a typical set. $B_0$ differs from the
 other sets only in being held fixed in the distance calculations.
 
-Use at least $R=1000$ null replicates for a minimum attainable P-value of
-$1/1001$, approximately $10^{-3}$. Plot one equal-size point per focal category at
+With $R$ near 1000 the minimum attainable P-value is about $1/(R+1)\approx10^{-3}$. Plot one equal-size point per focal category at
 $Z_A$, color it by $-\log_{10}P_A$, and show its category-specific null Z-score
-distribution in gray. Cap the displayed color scale at 3 when $R=1000$.
+distribution in gray. Cap the displayed color scale at $\log_{10}(R+1)$, about 3.
 
 ![Illustrative category-specific null distributions, standardized Phi-SFS effects, and P-value colors](figures/phi_sfs_null_standardization_example.png)
 
@@ -544,7 +548,7 @@ sbatch --export=ALL,STORE="$STORE",TARGET="$TARGET",A_POSITIONS="$A_POSITIONS",\
 OUTPUT="$MATCHES",CANDIDATE_ROWS="$CANDIDATES",WORK_DIR="$WORK_DIR",\
 VCF_ELIGIBILITY="$VCF_ELIGIBILITY",A_TYPE="$A_TYPE",\
 TE_POLARITY_MASK="$POLARITY_MASK",MAX_FLIPPED_FRACTION=0.5,\
-REPLICATES=1201,RESTARTS=3,SEED=1002,SCRATCH_HEADROOM_GB=32 \
+REPLICATES=1001,RESTARTS=3,SEED=1002,SCRATCH_HEADROOM_GB=32 \
   slurm/run_bootstrap_matching.sbatch
 ```
 
@@ -631,7 +635,7 @@ while IFS=$'\t' read -r label positions prelim mask target matches work seed; do
 A_POSITIONS="$positions",A_TYPE=TE,OUTPUT="$matches",CANDIDATE_ROWS="$CANDIDATES",\
 VCF_ELIGIBILITY="$VCF_ELIGIBILITY",\
 WORK_DIR="$work",TE_POLARITY_MASK="$mask",MAX_FLIPPED_FRACTION=0.5,\
-REPLICATES=1201,RESTARTS=3,SEED="$seed",SCRATCH_HEADROOM_GB=32 \
+REPLICATES=1001,RESTARTS=3,SEED="$seed",SCRATCH_HEADROOM_GB=32 \
     slurm/run_bootstrap_matching.sbatch)
   match_job=${match_job%%;*}
 
@@ -660,7 +664,7 @@ Before accepting the results:
 3. Confirm the final target records `POLARITY_MASK`, the intended
    `max_flipped_fraction`, inclusive at 0.5, the eligibility artifact, and plausible
    kept/discarded counts. For SNP A, confirm `a_type=SNP` and no TE mask.
-4. Confirm the matcher published 1201 identically generated sets in disjoint mode,
+4. Confirm the matcher published 1001 identically generated sets in disjoint mode,
    maximum control reuse is one, every overlap with $B_0$ is zero, and all sets used
    in Phi-SFS pass matching QC.
 5. Confirm the `phi-sfs-wasserstein-v1` result records the intended A/B types, exactly

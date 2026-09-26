@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -759,8 +760,8 @@ def _validate_vcf_identity(target_meta: dict, match_meta: dict, *, heterozygous:
 
 
 def calculate(args: argparse.Namespace) -> None:
-    if args.null_replicates < 2:
-        raise ValueError("--null-replicates must be at least 2 for a Z-score")
+    if args.min_null_replicates < 2:
+        raise ValueError("--min-null-replicates must be at least 2 for a Z-score")
     if args.reference_sensitivity < 0:
         raise ValueError("--reference-sensitivity must be nonnegative")
     target_meta, match_meta, target_digest = _validate_provenance(args.target, args.matches)
@@ -789,37 +790,56 @@ def calculate(args: argparse.Namespace) -> None:
     replicate_ids = identifiers["replicate_id"]
     if np.unique(replicate_ids).size != replicate_ids.size:
         raise ValueError("matched-control replicate_id values must be unique")
-    reference_hits = np.flatnonzero(replicate_ids == args.reference_replicate)
-    if reference_hits.size != 1:
-        raise ValueError(
-            f"reference replicate ID {args.reference_replicate} is absent from matches"
-        )
-
     qc_pass = np.load(args.matches / "qc_pass.npy", allow_pickle=False)
     if qc_pass.dtype.kind != "b" or qc_pass.shape != replicate_ids.shape:
         raise ValueError("qc_pass.npy must be a boolean array aligned with matched sets")
-    reference_source_index = int(reference_hits[0])
-    if not bool(qc_pass[reference_source_index]):
-        raise ValueError(f"reference replicate ID {args.reference_replicate} failed matching QC")
-    # R is fixed so every category is calibrated with equal precision. The
-    # matcher publishes spare sets; the nulls are the first R QC-passing
-    # non-reference sets in replicate_id order. QC is age-only, so this choice
-    # is made before and independently of any SFS. Unused spares are the
-    # latest, most pool-depleted replicates.
     replicate_order = np.argsort(replicate_ids, kind="stable")
-    passing_nulls = replicate_order[
-        qc_pass[replicate_order] & (replicate_order != reference_source_index)
-    ]
-    available_null_count = int(passing_nulls.size)
-    null_count = int(args.null_replicates)
-    if available_null_count < null_count:
-        raise ValueError(
-            f"only {available_null_count} QC-passing null replicates remain after "
-            f"reserving B0; --null-replicates requires {null_count}. Publish more "
-            "spare matched sets rather than lowering R after the fact"
+    passing = replicate_order[qc_pass[replicate_order]]
+
+    # B0 is drawn uniformly from the QC-passing sets with a seed derived from
+    # --reference-seed and the target digest, unless --reference-replicate
+    # names it. Replicate 0 is matched first, from the undepleted pool, so it
+    # is not a typical set; a seeded draw keeps the choice prespecified,
+    # reproducible and SFS-blind while making B0 exchangeable with the rest.
+    # The same permutation supplies the alternative references for
+    # reference sensitivity, so they are prespecified in the same way.
+    reference_seed = int.from_bytes(hashlib.sha256(
+        f"phi-sfs-reference:{args.reference_seed}:{target_digest}".encode()
+    ).digest()[:8], "little")
+    order = passing[np.random.default_rng(reference_seed).permutation(passing.size)]
+    if args.reference_replicate is None:
+        if order.size == 0:
+            raise ValueError("no matched set passes QC, so no reference can be drawn")
+        reference_source_index = int(order[0])
+        reference_rule = (
+            f"uniform draw from QC-passing sets, seed from --reference-seed "
+            f"{args.reference_seed} and target_digest"
         )
-    null_source_indices = passing_nulls[:null_count]
-    unused_passing_ids = replicate_ids[passing_nulls[null_count:]]
+    else:
+        reference_hits = np.flatnonzero(replicate_ids == args.reference_replicate)
+        if reference_hits.size != 1:
+            raise ValueError(
+                f"reference replicate ID {args.reference_replicate} is absent from matches"
+            )
+        reference_source_index = int(reference_hits[0])
+        if not bool(qc_pass[reference_source_index]):
+            raise ValueError(
+                f"reference replicate ID {args.reference_replicate} failed matching QC"
+            )
+        reference_rule = "prespecified --reference-replicate"
+    alternatives = order[order != reference_source_index]
+
+    # The nulls are every QC-passing set other than B0, so R is whatever the
+    # matcher delivered, subject to a floor fixed before the run. QC is
+    # computed from age matching alone, so this choice never looks at an SFS.
+    # The add-one P-value (1 + exceedances) / (R + 1) is valid for any such R.
+    null_source_indices = passing[passing != reference_source_index]
+    null_count = int(null_source_indices.size)
+    if null_count < args.min_null_replicates:
+        raise ValueError(
+            f"only {null_count} QC-passing null replicates remain after reserving "
+            f"B0; --min-null-replicates requires {args.min_null_replicates}"
+        )
     accepted_source_indices = np.sort(
         np.append(null_source_indices, reference_source_index)
     )
@@ -828,38 +848,20 @@ def calculate(args: argparse.Namespace) -> None:
     )[0])
     null_indices = np.delete(np.arange(accepted_source_indices.size), reference_index)
 
-    # Reference sensitivity re-runs the primary selection rule with each of a
-    # prespecified run of alternative B0 identities. Selection happens here,
-    # alongside the primary selection above and before any SFS is read, so it
-    # is exactly as SFS-blind as the primary rule. "Next after" walks forward
-    # in replicate_id order from the primary reference and does not wrap, so
-    # a target with too few later QC-passing sets fails rather than silently
-    # reusing an earlier one.
-    reference_rank = int(np.flatnonzero(replicate_order == reference_source_index)[0])
-    after_reference = replicate_order[reference_rank + 1:]
-    passing_after_reference = after_reference[qc_pass[after_reference]]
+    # Reference sensitivity reruns the calibration with the next N sets of the
+    # same seeded permutation as B0. Each alternative uses every other
+    # QC-passing set as its nulls, so the primary B0 becomes a null there, and
+    # all of them draw on the same scanned sets as the primary analysis.
     sensitivity_n = int(args.reference_sensitivity)
-    if passing_after_reference.size < sensitivity_n:
+    if alternatives.size < sensitivity_n:
         raise ValueError(
-            f"only {int(passing_after_reference.size)} QC-passing replicates follow "
-            f"reference replicate ID {args.reference_replicate} in replicate-ID order; "
-            f"--reference-sensitivity {sensitivity_n} requires that many (no wraparound)"
+            f"only {int(alternatives.size)} other QC-passing sets exist; "
+            f"--reference-sensitivity {sensitivity_n} requires that many"
         )
-    sensitivity_source_indices = passing_after_reference[:sensitivity_n]
-    sensitivity_accepted_sets: list[np.ndarray] = []
-    for alt_source in sensitivity_source_indices.tolist():
-        alt_passing_nulls = replicate_order[
-            qc_pass[replicate_order] & (replicate_order != alt_source)
-        ]
-        if alt_passing_nulls.size < null_count:
-            raise ValueError(
-                f"only {int(alt_passing_nulls.size)} QC-passing null replicates remain "
-                f"for alternative reference ID {int(replicate_ids[alt_source])}; "
-                f"--null-replicates requires {null_count}"
-            )
-        sensitivity_accepted_sets.append(
-            np.sort(np.append(alt_passing_nulls[:null_count], alt_source))
-        )
+    sensitivity_source_indices = alternatives[:sensitivity_n]
+    sensitivity_accepted_sets: list[np.ndarray] = [
+        np.sort(passing) for _ in sensitivity_source_indices.tolist()
+    ]
     # Every set any analysis (primary or sensitivity) uses must be scanned, so
     # the union -- not just the primary accepted set -- determines `requested`
     # below. The primary computation still reads only its own accepted
@@ -1352,20 +1354,17 @@ def calculate(args: argparse.Namespace) -> None:
                 "the VCF FILTER column is ignored; every record at a requested "
                 "coordinate is used"
             ),
-            "reference_selection_rule": "prespecified --reference-replicate before SFS scan",
+            "reference_selection_rule": reference_rule + ", chosen before the SFS scan",
+            "reference_seed": args.reference_seed,
             "reference_replicate_id": reference_id,
             "reference_index_in_b_arrays": reference_index,
             "reference_bootstrap_seed": int(bootstrap_seeds[reference_source]),
             "reference_bootstrap_counts_array": "b_bootstrap_counts.npy",
-            "requested_null_replicates": null_count,
+            "minimum_null_replicates": args.min_null_replicates,
             "accepted_null_replicates": null_count,
-            "null_selection_rule": (
-                "first R QC-passing non-reference sets in replicate_id order"
-            ),
+            "null_selection_rule": "every QC-passing non-reference set",
             "matched_sets_published": int(replicate_ids.size),
             "matched_sets_failing_qc": int(np.count_nonzero(~qc_pass)),
-            "qc_passing_null_sets_available": available_null_count,
-            "unused_qc_passing_replicate_ids": unused_passing_ids.tolist(),
             "null_standard_deviation_ddof": 1,
             "p_value_tail_rule": "null distance >= observed distance",
             "p_value_formula": "(1 + exceedances) / (R + 1)",
@@ -1402,11 +1401,9 @@ def calculate(args: argparse.Namespace) -> None:
             "reference_sensitivity_n": sensitivity_n,
             "reference_sensitivity_reference_ids": sensitivity_reference_ids,
             "reference_sensitivity_rule": (
-                "alternative references are the next N QC-passing replicate IDs "
-                "after the primary reference in replicate-ID order (no wraparound); "
-                "each alternative reruns the primary null-selection rule with "
-                "itself as B0 -- the first R QC-passing non-reference sets in "
-                "replicate-ID order -- so the primary reference may become a null"
+                "alternative references are the next N sets of the seeded "
+                "permutation of QC-passing sets that chose B0; each uses every "
+                "other QC-passing set as its nulls, so the primary B0 becomes a null"
             ),
             "target_source_store_content_sha256": target_meta.get("source_store_content_sha256"),
             "matches_source_store_content_sha256": match_meta.get("source_store_content_sha256"),
@@ -1440,20 +1437,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="variant type of every matched control set B (default: SNP)",
     )
     parser.add_argument(
-        "--reference-replicate", type=int, default=0,
-        help="prespecified matched replicate ID to hold fixed as B0 (default: 0)",
+        "--reference-replicate", type=int, default=None,
+        help="matched replicate ID to hold fixed as B0; by default B0 is drawn "
+             "uniformly from the QC-passing sets (see --reference-seed)",
     )
     parser.add_argument(
-        "--null-replicates", type=int, default=1000,
-        help="exact number R of null B_i sets: the first R QC-passing "
-             "non-reference sets in replicate_id order; fails if fewer pass "
-             "(default: 1000)",
+        "--reference-seed", type=int, default=1002,
+        help="seed, combined with the target digest, for drawing B0 and the "
+             "reference-sensitivity alternatives (default: 1002)",
+    )
+    parser.add_argument(
+        "--min-null-replicates", type=int, default=900,
+        help="floor on R: every QC-passing non-reference set is a null, and "
+             "the run fails if fewer than this many pass (default: 900)",
     )
     parser.add_argument(
         "--reference-sensitivity", type=int, default=0,
-        help="repeat calibration for N additional prespecified reference sets: "
-             "the next N QC-passing replicate IDs after --reference-replicate "
-             "in replicate_id order (no wraparound); fails if fewer follow "
+        help="repeat calibration with N alternative references: the next N "
+             "sets of the seeded permutation that chose B0 "
              "(default: 0, no sensitivity run)",
     )
     parser.add_argument(

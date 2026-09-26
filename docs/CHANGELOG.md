@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Null replicates and the reference set
+
+- The matcher publishes 1001 disjoint sets by default, down from 1201. The in-gene
+  target's youngest 1,500 generations hold only about 1,045 disjoint sets' worth of
+  candidate age mass, so 1201 sets cannot all be age-matched.
+- Phi-SFS uses every QC-passing set other than B0 as a null, so R is whatever passes
+  QC. `--min-null-replicates` (default 900) sets a floor fixed before the run.
+  `--null-replicates` is removed. The add-one P-value (1 + exceedances) / (R + 1) is
+  valid for any R chosen without reference to the SFS.
+- B0 is drawn uniformly from the QC-passing sets with a seed derived from
+  `--reference-seed` (default 1002) and the target digest, instead of being
+  replicate 0. Replicate 0 is matched first, from the undepleted pool, so it is not
+  a typical set. `--reference-replicate` still names B0 explicitly, and reference
+  sensitivity takes its alternatives from the same seeded permutation.
+- `phi_contrast` accepts categories with different R and contrasts each pair over
+  min(R1, R2) randomly paired null replicates.
+
+### Disjoint capacity is measured in age mass
+
+The per-stratum preflight counted candidates by median-age stratum but compared
+them with quotas that are shares of the target's age mass. Most young mass on both
+sides comes from diffuse intervals, which median counting ignores, so the check
+reported about 357 sets of capacity for the in-gene target where the pool holds
+about 1,045 sets' worth. Both sides are now summed interval-weighted CDF mass.
+
 ## v0.8.0 — 2026-09-25
 
 This release renames the project to PhiTE and replaces the Phi-SFS statistic.

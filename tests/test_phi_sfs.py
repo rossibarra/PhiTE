@@ -457,14 +457,21 @@ def _ancestral_table(tmp_path, positions=(10, 20, 30, 40, 50, 60, 70, 80)):
     return table
 
 
-def _run(target, matches, vcf, output, *extra, sync_identity=True):
+def _run(target, matches, vcf, output, *extra, sync_identity=True, reference=0):
+    """Run the CLI with a floor of 2 nulls.
+
+    Hand-calculated tests fix B0 at replicate 0 through `reference`; pass
+    `reference=None` to exercise the default seeded draw of B0.
+    """
     if sync_identity:
         _sync_vcf_identity(target, matches, Path(vcf))
     argv = [
         "--target", str(target), "--matches", str(matches),
         "--vcf", str(vcf), "--output", str(output),
-        "--null-replicates", "2", *extra,
+        "--min-null-replicates", "2", *extra,
     ]
+    if reference is not None and "--reference-replicate" not in extra:
+        argv += ["--reference-replicate", str(reference)]
     if "--ancestral-table" not in argv:
         argv += ["--ancestral-table", str(_ancestral_table(Path(output).parent))]
     return main(argv)
@@ -804,12 +811,12 @@ def test_minimum_null_count_is_enforced(tmp_path):
     with pytest.raises(ValueError, match="only 2 QC-passing null replicates"):
         _run(
             target, matches, vcf, tmp_path / "phi",
-            "--null-replicates", "3",
+            "--min-null-replicates", "3",
         )
 
 
 def _spare_set_bundle(tmp_path):
-    """Four matched sets, so R = 2 leaves one spare set."""
+    """Four matched sets: B0 plus up to three nulls."""
     target, matches = _write_bundle(
         tmp_path,
         positions=np.array([[30, 40], [50, 60], [70, 80], [90, 100]]),
@@ -823,21 +830,26 @@ def _spare_set_bundle(tmp_path):
     return target, matches, vcf, table
 
 
-def test_nulls_are_the_first_r_passing_sets_in_replicate_order(tmp_path):
+def test_every_qc_passing_set_other_than_b0_is_a_null(tmp_path):
     target, matches, vcf, table = _spare_set_bundle(tmp_path)
     output = tmp_path / "phi"
     assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
-    assert np.load(output / "null_replicate_id.npy").tolist() == [1, 2]
-    assert np.load(output / "b_replicate_id.npy").tolist() == [0, 1, 2]
+    assert np.load(output / "null_replicate_id.npy").tolist() == [1, 2, 3]
+    assert np.load(output / "b_replicate_id.npy").tolist() == [0, 1, 2, 3]
     metadata = json.loads((output / "metadata.json").read_text())
-    assert metadata["requested_null_replicates"] == 2
+    assert metadata["accepted_null_replicates"] == 3
+    assert metadata["minimum_null_replicates"] == 2
     assert metadata["matched_sets_published"] == 4
     assert metadata["matched_sets_failing_qc"] == 0
-    assert metadata["qc_passing_null_sets_available"] == 3
-    assert metadata["unused_qc_passing_replicate_ids"] == [3]
+    assert metadata["null_selection_rule"] == "every QC-passing non-reference set"
+    summary = dict(zip(*(
+        line.split(",") for line in (output / "summary.csv").read_text().splitlines()
+    )))
+    assert summary["null_replicates_r"] == "3"
+    assert float(summary["minimum_attainable_p"]) == pytest.approx(1 / 4)
 
 
-def test_a_failed_set_is_replaced_by_the_next_spare(tmp_path):
+def test_a_failed_set_simply_reduces_r(tmp_path):
     target, matches, vcf, table = _spare_set_bundle(tmp_path)
     qc = np.load(matches / "qc_pass.npy")
     qc[1] = False
@@ -848,7 +860,53 @@ def test_a_failed_set_is_replaced_by_the_next_spare(tmp_path):
     assert np.load(output / "b_replicate_id.npy").tolist() == [0, 2, 3]
     metadata = json.loads((output / "metadata.json").read_text())
     assert metadata["matched_sets_failing_qc"] == 1
-    assert metadata["unused_qc_passing_replicate_ids"] == []
+    assert metadata["accepted_null_replicates"] == 2
+
+
+def test_default_b0_is_a_reproducible_seeded_draw(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    first, second = tmp_path / "phi1", tmp_path / "phi2"
+    for output in (first, second):
+        assert _run(
+            target, matches, vcf, output, "--ancestral-table", str(table),
+            reference=None,
+        ) == 0
+    reference = np.load(first / "reference_replicate_id.npy").item()
+    assert np.load(second / "reference_replicate_id.npy").item() == reference
+    assert reference in (0, 1, 2, 3)
+    nulls = np.load(first / "null_replicate_id.npy").tolist()
+    assert sorted(nulls + [reference]) == [0, 1, 2, 3]
+    metadata = json.loads((first / "metadata.json").read_text())
+    assert metadata["reference_seed"] == 1002
+    assert metadata["reference_selection_rule"].startswith("uniform draw from QC-passing sets")
+
+
+def test_reference_seed_changes_the_drawn_b0(tmp_path):
+    """Some seed among a handful must pick a different B0 from four sets."""
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    drawn = set()
+    for seed in range(8):
+        output = tmp_path / f"phi{seed}"
+        assert _run(
+            target, matches, vcf, output, "--ancestral-table", str(table),
+            "--reference-seed", str(seed), reference=None,
+        ) == 0
+        drawn.add(np.load(output / "reference_replicate_id.npy").item())
+    assert len(drawn) > 1
+
+
+def test_a_drawn_b0_never_fails_qc(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    qc = np.load(matches / "qc_pass.npy")
+    qc[0] = False
+    np.save(matches / "qc_pass.npy", qc)
+    for seed in range(6):
+        output = tmp_path / f"phi{seed}"
+        assert _run(
+            target, matches, vcf, output, "--ancestral-table", str(table),
+            "--reference-seed", str(seed), reference=None,
+        ) == 0
+        assert np.load(output / "reference_replicate_id.npy").item() in (1, 2, 3)
 
 
 def _sensitivity_bundle(tmp_path):
@@ -881,12 +939,11 @@ def _sensitivity_bundle(tmp_path):
 
 
 def test_reference_sensitivity_selection_and_primary_arrays_unchanged(tmp_path):
-    """With reference id 2, sensitivity N=2 must select ids 3 and 4.
+    """With reference id 2, sensitivity N=2 draws two other QC-passing sets.
 
-    Ascending, no wraparound. Each alternative's own null selection can reach
-    a set the primary run (accepted set {0, 1, 2}) never touches -- id 4's
-    rerun accepts {0, 1, 4}. Requesting sensitivity must not perturb any
-    primary array.
+    The alternatives come from the same seeded permutation that would draw B0,
+    so they are prespecified, distinct, never the primary reference, and
+    reproducible. Requesting sensitivity must not perturb any primary array.
     """
     target, matches, vcf, table = _sensitivity_bundle(tmp_path)
 
@@ -925,7 +982,15 @@ def test_reference_sensitivity_selection_and_primary_arrays_unchanged(tmp_path):
         assert plain_summary[key] == sensitivity_summary[key]
 
     ids = np.load(out_sensitivity / "sensitivity_reference_ids.npy")
-    assert ids.tolist() == [3, 4]
+    assert len(set(ids.tolist())) == 2
+    assert set(ids.tolist()) <= {0, 1, 3, 4}
+    rerun = tmp_path / "phi_sensitivity_rerun"
+    assert _run(
+        target, matches, vcf, rerun,
+        "--reference-replicate", "2", "--reference-sensitivity", "2",
+        "--ancestral-table", str(table),
+    ) == 0
+    np.testing.assert_array_equal(np.load(rerun / "sensitivity_reference_ids.npy"), ids)
     z_scores = np.load(out_sensitivity / "sensitivity_z_scores.npy")
     p_values = np.load(out_sensitivity / "sensitivity_p_values.npy")
     observed = np.load(out_sensitivity / "sensitivity_observed_phi_sfs.npy")
@@ -936,7 +1001,7 @@ def test_reference_sensitivity_selection_and_primary_arrays_unchanged(tmp_path):
     metadata = json.loads((out_sensitivity / "metadata.json").read_text())
     assert metadata["reference_sensitivity_run"] is True
     assert metadata["reference_sensitivity_n"] == 2
-    assert metadata["reference_sensitivity_reference_ids"] == [3, 4]
+    assert metadata["reference_sensitivity_reference_ids"] == ids.tolist()
 
     plain_metadata = json.loads((out_plain / "metadata.json").read_text())
     assert plain_metadata["reference_sensitivity_run"] is False
@@ -962,10 +1027,10 @@ def test_reference_sensitivity_selection_and_primary_arrays_unchanged(tmp_path):
     )
 
 
-def test_reference_sensitivity_fails_if_too_few_follow(tmp_path):
-    """Only id 4 follows id 3, and wraparound to ids 0-2 is not allowed."""
+def test_reference_sensitivity_fails_if_too_few_alternatives(tmp_path):
+    """Five sets leave four alternatives to reference id 3, not five."""
     target, matches, vcf, table = _sensitivity_bundle(tmp_path)
-    with pytest.raises(ValueError, match="QC-passing replicates follow"):
+    with pytest.raises(ValueError, match="only 4 other QC-passing sets exist"):
         _run(
             target, matches, vcf, tmp_path / "phi",
             "--reference-replicate", "3", "--reference-sensitivity", "5",

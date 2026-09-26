@@ -43,8 +43,9 @@
 #   OUTPUT      results directory to publish; must not exist      [required]
 #   A_TYPE      TE|SNP for focal set A                                  (TE)
 #   B_TYPE      SNP for matched control sets B                          (SNP)
-#   REFERENCE_REPLICATE  prespecified B0 replicate ID                     (0)
-#   NULL_REPLICATES  exact R: first R QC-passing non-reference sets    (1000)
+#   REFERENCE_REPLICATE  B0 replicate ID; unset draws B0 at random   (unset)
+#   REFERENCE_SEED   seed for the B0 draw, with the target digest   (1002)
+#   MIN_NULL_REPLICATES  floor on R, the number of QC-passing nulls    (900)
 #   HETEROZYGOUS  error|missing for diploid calls                 (error)
 #
 # The scan is the dominant cost and is polarity-independent: it reads the VCF
@@ -64,8 +65,13 @@ PROJECT="${PROJECT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.."
 HETEROZYGOUS="${HETEROZYGOUS:-error}"
 A_TYPE="${A_TYPE:-TE}"
 B_TYPE="${B_TYPE:-SNP}"
-REFERENCE_REPLICATE="${REFERENCE_REPLICATE:-0}"
-NULL_REPLICATES="${NULL_REPLICATES:-1000}"
+REFERENCE_REPLICATE="${REFERENCE_REPLICATE:-}"
+REFERENCE_SEED="${REFERENCE_SEED:-1002}"
+MIN_NULL_REPLICATES="${MIN_NULL_REPLICATES:-900}"
+reference_option=()
+if [[ -n "$REFERENCE_REPLICATE" ]]; then
+    reference_option=(--reference-replicate "$REFERENCE_REPLICATE")
+fi
 cd "$PROJECT"
 # Batch jobs get a non-login shell, where `module` does not exist.
 . "$PROJECT/slurm/slurm_conda_bootstrap.sh"
@@ -89,7 +95,8 @@ python -m normalize_tes.phi_sfs \
     --output "$OUTPUT" \
     -A "$A_TYPE" \
     -B "$B_TYPE" \
-    --reference-replicate "$REFERENCE_REPLICATE" \
-    --null-replicates "$NULL_REPLICATES" \
+    "${reference_option[@]}" \
+    --reference-seed "$REFERENCE_SEED" \
+    --min-null-replicates "$MIN_NULL_REPLICATES" \
     --heterozygous "$HETEROZYGOUS"
 date
