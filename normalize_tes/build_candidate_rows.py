@@ -36,7 +36,7 @@ from .release_provenance import software_provenance
 from .snp_age_dataset import load_native_position_list
 from .snp_age_store import open_snp_age_store, store_schema
 from .snp_position_resolution import resolve_native_position_requests
-from .vcf_eligibility import load_eligible_rows
+from .vcf_eligibility import load_eligibility
 
 
 def _sha256_array(values: np.ndarray) -> str:
@@ -182,11 +182,14 @@ def main(argv: list[str] | None = None) -> int:
         inclusion_rows, inclusion_reports = _resolve_lists(
             store, list(args.include_positions), args.min_resolved_fraction, "inclusion"
         )
+    vcf_eligibility_identity: dict | None = None
     if args.vcf_eligibility is not None:
-        vcf_rows = load_eligible_rows(
+        loaded_eligibility = load_eligibility(
             args.vcf_eligibility, store, variant_type="SNP",
             expected_min_callable=20,
         )
+        vcf_rows = loaded_eligibility.rows
+        vcf_eligibility_identity = loaded_eligibility.identity
         inclusion_rows = (
             vcf_rows if inclusion_rows is None
             else np.intersect1d(inclusion_rows, vcf_rows, assume_unique=True)
@@ -210,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             str(args.vcf_eligibility.resolve())
             if args.vcf_eligibility is not None else None
         ),
+        "vcf_eligibility_identity": vcf_eligibility_identity,
         "excluded_rows": int(exclusion_rows.size),
         "candidate_rows": int(candidates.size),
         "candidate_rows_sha256": _sha256_array(candidates),

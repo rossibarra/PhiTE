@@ -1,6 +1,10 @@
+import json
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
+from normalize_tes import te_age_target
 from normalize_tes.te_age_target import (
     aggregate_cdf,
     bootstrap_wasserstein,
@@ -14,6 +18,7 @@ from normalize_tes.te_age_target import (
 )
 from normalize_tes.snp_interval_dataset import INTERVAL_SCHEMA_VERSION, interval_cdf
 from normalize_tes.snp_age_dataset import load_native_position_list
+from normalize_tes.vcf_eligibility import EligibilityResult, eligibility_identity, publish
 
 
 def test_wasserstein_identical_adjacent_distant_and_nonuniform():
@@ -250,3 +255,85 @@ def test_interval_scratch_matrix_matches_in_memory_reference(tmp_path):
     )
     np.testing.assert_allclose(result.bootstrap_wasserstein, expected, atol=1e-4)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_target_metadata_carries_vcf_eligibility_identity(tmp_path, monkeypatch):
+    """Finding 4: the target must record the mask's content identity, not
+    only its resolved path, so a consumer can require an exact match."""
+    store = SimpleNamespace(
+        positions=np.array([1.0, 2.0, 3.0]),
+        eligible=np.array([True, True, True]),
+        metadata={"content_sha256": "content", "catalog_sha256": "catalog"},
+    )
+    mask = tmp_path / "mask"
+    result = EligibilityResult(
+        rows=np.array([0, 1, 2], dtype=np.int64),
+        alt_counts=np.zeros(3, dtype=np.uint32),
+        callable_counts=np.full(3, 20, dtype=np.uint32),
+        report={
+            "schema_version": "vcf-eligibility-v1",
+            "eligible_rows": 3,
+            "min_callable": 20,
+            "vcf_sha256": "vcf-fake-hash",
+            "heterozygous": "error",
+            "store_content_sha256": "content",
+            "store_catalog_sha256": "catalog",
+        },
+        snp_rows=np.array([], dtype=np.int64),
+        p_alt_derived=np.array([], dtype=np.float64),
+    )
+    publish(mask, result, {})
+    expected_identity = eligibility_identity(
+        json.loads((mask / "metadata.json").read_text())
+    )
+
+    monkeypatch.setattr(te_age_target, "open_snp_age_store", lambda _: store)
+    monkeypatch.setattr(te_age_target, "store_schema", lambda _: "test-store")
+    monkeypatch.setattr(te_age_target, "software_provenance", lambda: {})
+    monkeypatch.setattr(
+        te_age_target, "load_native_position_list",
+        lambda _: (np.array(["chr1", "chr1", "chr1"]), np.array([1, 2, 3])),
+    )
+    resolution = SimpleNamespace(
+        included_global_positions=np.array([1.0, 2.0, 3.0]),
+        included_chromosomes=np.array(["chr1", "chr1", "chr1"]),
+        included_native_positions=np.array([1, 2, 3]),
+        included_rows=np.array([0, 1, 2]),
+        summary=lambda: {},
+        excluded_coordinates=lambda: [],
+    )
+    monkeypatch.setattr(
+        te_age_target, "resolve_native_position_requests",
+        lambda *args, **kwargs: resolution,
+    )
+    fake_result = te_age_target.TargetResult(
+        te_global_positions=np.array([1.0, 2.0, 3.0]),
+        te_chromosomes=np.array(["chr1", "chr1", "chr1"]),
+        te_positions=np.array([1, 2, 3]),
+        te_row_indices=np.array([0, 1, 2]),
+        target_cdf=np.array([0.0, 1.0]),
+        bootstrap_wasserstein=np.array([0.0]),
+        boundaries=te_age_target.BoundarySet(
+            indices=np.array([0, 1]),
+            ages=np.array([0.0, 1_000.0]),
+            interval_shares=np.array([1.0]),
+        ),
+        interval_quotas=np.array([3]),
+        threshold=100.0,
+        seed=1,
+        age_bins=np.array([0, 1_000]),
+        boundary_ages=np.array([0.0, 1_000.0]),
+    )
+    monkeypatch.setattr(te_age_target, "build_target", lambda *a, **k: fake_result)
+
+    output = tmp_path / "target"
+    assert te_age_target.main([
+        "--store", "store", "--te-positions", "positions.txt",
+        "--output", str(output), "--vcf-eligibility", str(mask),
+    ]) == 0
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["vcf_eligibility"]["mask"] == str(mask.resolve())
+    assert metadata["vcf_eligibility"]["sites_before"] == 3
+    assert metadata["vcf_eligibility"]["sites_removed"] == 0
+    assert metadata["vcf_eligibility"]["sites_kept"] == 3
+    assert metadata["vcf_eligibility"]["identity"] == expected_identity

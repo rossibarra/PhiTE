@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 from pathlib import Path
 
@@ -247,12 +248,35 @@ def test_calibrate_phi_rejects_invalid_input(observed, null, message):
 # -------------------------------------------------------------- the fixtures
 
 
-def _write_bundle(root: Path, *, positions=None, row_indices=None, target_digest=None):
-    """Write a target and matched-control bundle that pass provenance checks."""
+def _write_bundle(
+    root: Path,
+    *,
+    positions=None,
+    row_indices=None,
+    target_digest=None,
+    a_type="TE",
+    include_te_polarity=None,
+    max_flipped_fraction=0.5,
+    heterozygous="error",
+):
+    """Write a target and matched-control bundle that pass provenance checks.
+
+    Defaults declare a valid TE target: `a_type` "TE", a `te_polarity` record
+    at the required `max_flipped_fraction=0.5`, and a `vcf_eligibility` record
+    carrying an `identity` dict. The matched-control metadata mirrors `a_type`
+    and carries the identical `vcf_eligibility_identity` dict, as the matcher
+    is contracted to copy it from the candidate report. `identity["vcf_sha256"]`
+    is a placeholder here because no VCF exists yet at bundle-construction
+    time; `_run` (or a direct call to `_sync_vcf_identity`) fills in the real
+    digest once the fixture's VCF is written.
+    """
     target = root / "target"
     matches = root / "matches"
     target.mkdir()
     matches.mkdir()
+
+    if include_te_polarity is None:
+        include_te_polarity = a_type == "TE"
 
     te_rows = np.array([0, 1], dtype=np.int64)
     cdf = np.array([0.5, 1.0], dtype=np.float64)
@@ -292,11 +316,26 @@ def _write_bundle(root: Path, *, positions=None, row_indices=None, target_digest
     digest = _sha256_arrays(
         te_rows, cdf, ages, np.asarray([threshold], dtype=np.float64)
     )
-    (target / "metadata.json").write_text(json.dumps({
+    identity = {
+        "vcf_sha256": "0" * 64,   # placeholder; _sync_vcf_identity fills this in
+        "heterozygous": heterozygous,
+        "min_callable": 20,
+        "store_content_sha256": "store",
+        "row_indices_sha256": "rows",
+        "snp_row_indices_sha256": "snp_rows",
+        "p_alt_derived_sha256": "polarity",
+    }
+    vcf_eligibility = {"mask": str((root / "eligibility").resolve()), "identity": identity}
+    target_metadata = {
         "source_store_content_sha256": "store",
         "source_catalog_sha256": "catalog",
         "wasserstein_threshold_generations": threshold,
-    }))
+        "a_type": a_type,
+        "vcf_eligibility": vcf_eligibility,
+    }
+    if include_te_polarity:
+        target_metadata["te_polarity"] = {"max_flipped_fraction": max_flipped_fraction}
+    (target / "metadata.json").write_text(json.dumps(target_metadata))
     (matches / "metadata.json").write_text(json.dumps({
         "schema_version": "bootstrap-target-matches-v1",
         "source_store_content_sha256": "store",
@@ -306,8 +345,32 @@ def _write_bundle(root: Path, *, positions=None, row_indices=None, target_digest
         "phi_sfs_selection_blind": True,
         "maximum_control_reuse": 1,
         "config": {"disjoint_replicates": True},
+        "a_type": a_type,
+        "vcf_eligibility_identity": dict(identity),
     }))
     return target, matches
+
+
+def _sync_vcf_identity(target: Path, matches: Path, vcf: Path) -> None:
+    """Patch the identity's `vcf_sha256` to match this fixture's actual VCF.
+
+    `_write_bundle` writes metadata before the VCF exists, so the digest it
+    records is a placeholder. `_run` calls this automatically so the ordinary
+    end-to-end tests get a consistent, passing identity without each test
+    having to know about it. A test that wants to exercise the digest-mismatch
+    check calls `_run(..., sync_identity=False)` after pinning the identity to
+    a different VCF's digest itself.
+    """
+    digest = hashlib.sha256(Path(vcf).read_bytes()).hexdigest()
+    target_meta_path = target / "metadata.json"
+    target_meta = json.loads(target_meta_path.read_text())
+    target_meta["vcf_eligibility"]["identity"]["vcf_sha256"] = digest
+    target_meta_path.write_text(json.dumps(target_meta))
+
+    matches_meta_path = matches / "metadata.json"
+    matches_meta = json.loads(matches_meta_path.read_text())
+    matches_meta["vcf_eligibility_identity"]["vcf_sha256"] = digest
+    matches_meta_path.write_text(json.dumps(matches_meta))
 
 
 def _record(position: int, derived: int, *, callable_count: int = 20, info: str = "."):
@@ -374,7 +437,9 @@ def _ancestral_table(tmp_path, positions=(10, 20, 30, 40, 50, 60, 70, 80)):
     return table
 
 
-def _run(target, matches, vcf, output, *extra):
+def _run(target, matches, vcf, output, *extra, sync_identity=True):
+    if sync_identity:
+        _sync_vcf_identity(target, matches, Path(vcf))
     argv = [
         "--target", str(target), "--matches", str(matches),
         "--vcf", str(vcf), "--output", str(output),
@@ -460,6 +525,9 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
     assert metadata["target_digest"] == json.loads(
         (matches / "metadata.json").read_text()
     )["target_digest"]
+    assert metadata["vcf_eligibility_identity"] == json.loads(
+        (target / "metadata.json").read_text()
+    )["vcf_eligibility"]["identity"]
 
     summary_header, summary_values = (
         line.split(",") for line in (output / "summary.csv").read_text().splitlines()
@@ -470,8 +538,6 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
 
 
 def test_vcf_sha256_matches_a_direct_digest(tmp_path):
-    import hashlib
-
     target, matches = _write_bundle(tmp_path)
     vcf = tmp_path / "sites.vcf"
     vcf.write_text(_vcf_text())
@@ -481,8 +547,6 @@ def test_vcf_sha256_matches_a_direct_digest(tmp_path):
 
 
 def test_compressed_input_is_read_and_hashed(tmp_path):
-    import hashlib
-
     target, matches = _write_bundle(tmp_path)
     vcf = tmp_path / "sites.vcf.bgz"
     vcf.write_bytes(gzip.compress(_vcf_text().encode()))
@@ -502,7 +566,8 @@ def test_heterozygous_calls_fail_by_default(tmp_path):
 
 
 def test_heterozygous_missing_policy_drops_the_individual(tmp_path):
-    target, matches = _write_bundle(tmp_path)
+    # The eligibility mask's recorded policy must agree with --heterozygous.
+    target, matches = _write_bundle(tmp_path, heterozygous="missing")
     vcf = tmp_path / "sites.vcf"
     # Site 10 loses one derived individual: k = 3 among n = 19, so it is dropped.
     vcf.write_text(_vcf_text().replace("\t1\t", "\t0/1\t", 1))
@@ -531,7 +596,7 @@ def test_existing_output_is_never_overwritten(tmp_path):
 
 
 def test_end_to_end_snp_a_uses_posterior_polarity(tmp_path):
-    target, matches = _write_bundle(tmp_path)
+    target, matches = _write_bundle(tmp_path, a_type="SNP")
     vcf = tmp_path / "sites.vcf"
     vcf.write_text(_vcf_text())
     table = _ancestral_table(tmp_path)
@@ -957,3 +1022,76 @@ def test_site_the_table_cannot_orient_is_rejected(tmp_path):
     np.save(table / "ancestral_counts.npy", counts)
     with pytest.raises(ValueError, match="cannot be polarized"):
         _run(target, matches, vcf, tmp_path / "out", "--ancestral-table", str(table))
+
+
+# --------------------------------------- target authority and VCF identity
+
+
+def test_snp_target_run_with_a_type_te_is_rejected(tmp_path):
+    """A SNP target run with `-A TE` must fail, not silently mispolarize."""
+    target, matches = _write_bundle(tmp_path, a_type="SNP")
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    with pytest.raises(ValueError, match="disagrees with target metadata a_type"):
+        _run(target, matches, vcf, tmp_path / "phi", "-A", "TE")
+
+
+def test_te_target_without_te_polarity_is_rejected(tmp_path):
+    target, matches = _write_bundle(tmp_path, include_te_polarity=False)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    with pytest.raises(ValueError, match="--te-polarity-mask"):
+        _run(target, matches, vcf, tmp_path / "phi")
+
+
+def test_te_target_with_wrong_max_flipped_fraction_is_rejected(tmp_path):
+    target, matches = _write_bundle(tmp_path, max_flipped_fraction=0.6)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    with pytest.raises(ValueError, match="max_flipped_fraction=0.5"):
+        _run(target, matches, vcf, tmp_path / "phi")
+
+
+def test_target_and_match_vcf_eligibility_identity_mismatch_is_rejected(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    metadata = json.loads((target / "metadata.json").read_text())
+    metadata["vcf_eligibility"]["identity"]["row_indices_sha256"] = "different-rows"
+    (target / "metadata.json").write_text(json.dumps(metadata))
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    with pytest.raises(ValueError, match="vcf_eligibility_identity values differ"):
+        _run(target, matches, vcf, tmp_path / "phi")
+
+
+def test_heterozygous_policy_mismatch_is_rejected(tmp_path):
+    """The eligibility mask's policy must match `--heterozygous`, not just A/B."""
+    target, matches = _write_bundle(tmp_path, heterozygous="missing")
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    with pytest.raises(
+        ValueError, match="disagrees with the eligibility mask's policy"
+    ):
+        _run(target, matches, vcf, tmp_path / "phi")
+
+
+def test_vcf_digest_mismatch_is_rejected(tmp_path):
+    """A VCF with different bytes but identical sites must still be rejected.
+
+    Every requested site is still callable and identical, so nothing else in
+    `calculate()` would catch this; only the recorded `vcf_sha256` can.
+    """
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    _sync_vcf_identity(target, matches, vcf)   # pin identity to this VCF's digest
+
+    other_vcf = tmp_path / "other.vcf"
+    other_vcf.write_text(
+        _vcf_text().replace(
+            "##fileformat=VCFv4.2\n", "##fileformat=VCFv4.2\n##note=repacked\n"
+        )
+    )
+    with pytest.raises(
+        ValueError, match="the VCF differs from the one that defined eligibility"
+    ):
+        _run(target, matches, other_vcf, tmp_path / "phi", sync_identity=False)

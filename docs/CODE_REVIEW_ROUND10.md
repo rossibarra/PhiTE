@@ -38,10 +38,13 @@ The pipeline is not ready for a production run. Three problems come first:
 
 | finding | decision | status |
 |---|---|---|
-| 2 | Option A: publish spare sets and keep R fixed at 1000, so every category has equal precision. The matcher default is now 1201 sets (K = 200). `phi_sfs --null-replicates R` uses B0 plus the first R QC-passing non-reference sets in replicate-ID order, fails if fewer pass, and records unused spares and the QC-failure count. `--min-null-replicates` is removed. | implemented, not yet committed; tests pass |
-| 3 | Still open. K = 200 raises the requirement to 1201 × M candidates, which makes the per-stratum capacity concern larger (about 787 sets' worth in the scarcest in-gene decile). | open |
+| 1 | Both `phi_sfs` and the matcher check the A type, the TE `max_flipped_fraction` of 0.5 and the eligibility record against target (and match) metadata before any work is done. | implemented |
+| 2 | Option A: publish spare sets and keep R fixed at 1000, so every category has equal precision. The matcher default is 1201 sets (K = 200). `phi_sfs --null-replicates R` uses B0 plus the first R QC-passing non-reference sets in replicate-ID order and fails if fewer pass. | implemented (`20b2363`) |
+| 3 | A per-stratum disjoint capacity preflight runs before any matching work (it takes about 24 min on the real pool). **Real data:** for `in_gene_75draw` against `candidate-rows-75draw.npy` (23.0 M candidates, before VCF eligibility), the youngest stratum holds about 357 sets' worth, and 6 of 20 strata are short at 1201 sets (3 are short even at 1001). The production design cannot run for this target with this pool. The null design needs a decision, and the depletion re-measurement is still outstanding. | check implemented; **design decision open** |
+| 4 | The eligibility artifact is identified by content: VCF digest, array digests, heterozygous policy and `min_callable`. The identity is recorded in the target, the candidate report and the match metadata. It is checked by the matcher, the launcher and `phi_sfs`, which also checks its VCF digest against it. | implemented |
 | 5 | Skipped by decision. | won't fix |
-| 6 | TEs with no usable draws are discarded (`keep_sites = (usable > 0) & ...`) and counted as `sites_with_no_usable_draw`. | implemented, not yet committed |
+| 6 | TEs with no usable draws are discarded and counted in `sites_with_no_usable_draw`. The existing tests cover this. | implemented |
+| 7 | Measured with `tools/benchmark_phi_sfs_scale.py` (synthetic, 1201 sets): peak 2.5 GiB and about 1.4 min at M = 4,067; 11.2 GiB and about 4 min at M = 19,000. This is within 48G / 6 h. The VCF scan and ancestral-table memory were not measured, so a real end-to-end run is still needed. | partly done |
 
 ## Findings
 

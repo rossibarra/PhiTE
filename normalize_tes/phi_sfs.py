@@ -722,10 +722,104 @@ def _validate_provenance(target: Path, matches: Path) -> tuple[dict, dict, str]:
     return target_meta, match_meta, digest
 
 
+def _validate_target_authority(target_meta: dict, match_meta: dict, a_type: str) -> None:
+    """Require the target, not `-A`, to be the authority on A's variant type.
+
+    Mirrors `bootstrap_target_matcher._validate_inputs` (wording only; that
+    helper is private to the matcher and is not imported here). Without this,
+    `--a-type` is trusted blindly: a SNP target run with `-A TE` silently adds
+    every SNP to `PolarityResolver`'s TE set and treats ALT as derived with
+    weight 1, producing a complete, plausible, and wrong result. These checks
+    must pass before `a_polarity_rule` is written to the output metadata or
+    the VCF is scanned.
+    """
+    target_a_type = target_meta.get("a_type")
+    if target_a_type not in ("TE", "SNP"):
+        raise ValueError(
+            "target metadata does not declare a valid a_type; rebuild the "
+            "target with normalize_tes.te_age_target --a-type TE or SNP"
+        )
+    if target_a_type != a_type:
+        raise ValueError(
+            f"--a-type {a_type} disagrees with target metadata a_type={target_a_type}"
+        )
+    match_a_type = match_meta.get("a_type")
+    if match_a_type is not None and match_a_type != a_type:
+        raise ValueError(
+            f"--a-type {a_type} disagrees with matched-control metadata "
+            f"a_type={match_a_type}"
+        )
+    te_polarity = target_meta.get("te_polarity")
+    if a_type == "TE":
+        if not isinstance(te_polarity, dict):
+            raise ValueError(
+                "-A TE requires a final target built with --te-polarity-mask "
+                "and --max-flipped-fraction 0.5"
+            )
+        threshold = te_polarity.get("max_flipped_fraction")
+        if not isinstance(threshold, (int, float)) or not math.isclose(
+            float(threshold), 0.5, rel_tol=0.0, abs_tol=1e-12
+        ):
+            raise ValueError(
+                "-A TE requires max_flipped_fraction=0.5 so exact 50% "
+                "derived-support ties are retained"
+            )
+    elif te_polarity is not None:
+        raise ValueError("-A SNP target must not apply the TE polarity filter")
+    eligibility = target_meta.get("vcf_eligibility")
+    if not isinstance(eligibility, dict) or not eligibility.get("mask"):
+        raise ValueError(
+            "age matching requires a final target built with --vcf-eligibility "
+            "so A was filtered before its size and age CDF were fixed"
+        )
+
+
+def _validate_vcf_identity(target_meta: dict, match_meta: dict, *, heterozygous: str) -> dict:
+    """Require the target and matched-control eligibility identities to agree.
+
+    `target_meta["vcf_eligibility"]["identity"]` and
+    `match_meta["vcf_eligibility_identity"]` are the same dict by contract --
+    the matcher copies it from the candidate report the eligibility mask was
+    built against -- so any difference means the two bundles rest on different
+    VCF eligibility decisions and must not be combined. The caller still owes
+    a check that the VCF actually scanned hashes to `identity["vcf_sha256"]`;
+    that can only happen after the scan, so this returns the identity rather
+    than checking the digest itself.
+    """
+    eligibility = target_meta.get("vcf_eligibility")
+    identity = eligibility.get("identity") if isinstance(eligibility, dict) else None
+    if not isinstance(identity, dict):
+        raise ValueError(
+            "target metadata vcf_eligibility record carries no identity; "
+            "rebuild the target from an eligibility mask that records one"
+        )
+    match_identity = match_meta.get("vcf_eligibility_identity")
+    if match_identity != identity:
+        raise ValueError(
+            "target and matched-control vcf_eligibility_identity values differ; "
+            "the two bundles were built against different VCF eligibility masks"
+        )
+    if identity.get("heterozygous") != heterozygous:
+        raise ValueError(
+            f"--heterozygous {heterozygous} disagrees with the eligibility "
+            f"mask's policy heterozygous={identity.get('heterozygous')!r}"
+        )
+    if identity.get("min_callable") != PROJECTION_SIZE:
+        raise ValueError(
+            f"eligibility mask min_callable={identity.get('min_callable')!r} "
+            f"must equal the projection size {PROJECTION_SIZE}"
+        )
+    return identity
+
+
 def calculate(args: argparse.Namespace) -> None:
     if args.null_replicates < 2:
         raise ValueError("--null-replicates must be at least 2 for a Z-score")
     target_meta, match_meta, target_digest = _validate_provenance(args.target, args.matches)
+    _validate_target_authority(target_meta, match_meta, args.a_type)
+    vcf_eligibility_identity = _validate_vcf_identity(
+        target_meta, match_meta, heterozygous=args.heterozygous
+    )
     match_schema = match_meta.get("schema_version")
     if match_schema != "bootstrap-target-matches-v1":
         raise ValueError(
@@ -937,6 +1031,12 @@ def calculate(args: argparse.Namespace) -> None:
         f"{polarity.control_sites:,} SNP sites from the ancestral table",
         flush=True,
     )
+    if vcf_sha256 != vcf_eligibility_identity["vcf_sha256"]:
+        raise ValueError(
+            "the VCF differs from the one that defined eligibility: scanned "
+            f"{args.vcf} hashes to {vcf_sha256}, but the eligibility identity "
+            f"records {vcf_eligibility_identity['vcf_sha256']}"
+        )
     missing = sorted(requested.difference(counts))
     if missing:
         preview = ", ".join(f"{chrom}:{pos}" for chrom, pos in missing[:10])
@@ -1150,6 +1250,7 @@ def calculate(args: argparse.Namespace) -> None:
             "target_digest": target_digest,
             "vcf": str(args.vcf.resolve()),
             "vcf_sha256": vcf_sha256,
+            "vcf_eligibility_identity": vcf_eligibility_identity,
             "a_polarity_rule": (
                 "insertion presence is derived after upstream at-least-50%-derived "
                 "retention" if args.a_type == "TE" else

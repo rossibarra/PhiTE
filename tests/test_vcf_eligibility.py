@@ -10,6 +10,7 @@ from normalize_tes import build_candidate_rows
 from normalize_tes import te_age_target
 from normalize_tes.vcf_eligibility import (
     EligibilityResult,
+    eligibility_identity,
     load_ancestral_table,
     load_eligibility,
     load_eligible_rows,
@@ -137,6 +138,8 @@ def test_published_mask_authenticates_store_and_projection_size(tmp_path):
             "schema_version": "vcf-eligibility-v1",
             "eligible_rows": 2,
             "min_callable": 20,
+            "vcf_sha256": "vcf-fake-hash",
+            "heterozygous": "error",
             "store_content_sha256": "content",
             "store_catalog_sha256": "catalog",
         },
@@ -162,6 +165,65 @@ def test_published_mask_authenticates_store_and_projection_size(tmp_path):
     with pytest.raises(SystemExit, match="authenticate"):
         load_eligible_rows(mask, other, variant_type="TE")
 
+    # Finding 4: the loaded object exposes the same content-addressed identity
+    # a caller would get by hashing the published metadata directly, so two
+    # consumers of the same mask are guaranteed to agree without comparing paths.
+    published_metadata = json.loads((mask / "metadata.json").read_text())
+    expected_identity = eligibility_identity(published_metadata)
+    assert set(expected_identity) == {
+        "vcf_sha256",
+        "heterozygous",
+        "min_callable",
+        "store_content_sha256",
+        "row_indices_sha256",
+        "snp_row_indices_sha256",
+        "p_alt_derived_sha256",
+    }
+    assert expected_identity["vcf_sha256"] == "vcf-fake-hash"
+    assert expected_identity["heterozygous"] == "error"
+    assert expected_identity["min_callable"] == 20
+    assert expected_identity["store_content_sha256"] == "content"
+    loaded_te = load_eligibility(mask, store, variant_type="TE", expected_min_callable=20)
+    assert loaded_te.identity == expected_identity
+    assert loaded_snp.identity == expected_identity
+
+
+def test_eligibility_identity_requires_every_field():
+    complete = {
+        "vcf_sha256": "vcf-hash",
+        "heterozygous": "missing",
+        "min_callable": 20,
+        "store_content_sha256": "store-hash",
+        "array_sha256": {
+            "row_indices": "row-hash",
+            "alt_counts": "alt-hash",
+            "callable_counts": "callable-hash",
+            "snp_row_indices": "snp-row-hash",
+            "p_alt_derived": "q-hash",
+        },
+    }
+    assert eligibility_identity(complete) == {
+        "vcf_sha256": "vcf-hash",
+        "heterozygous": "missing",
+        "min_callable": 20,
+        "store_content_sha256": "store-hash",
+        "row_indices_sha256": "row-hash",
+        "snp_row_indices_sha256": "snp-row-hash",
+        "p_alt_derived_sha256": "q-hash",
+    }
+    for key in ("vcf_sha256", "heterozygous", "min_callable", "store_content_sha256"):
+        incomplete = {k: v for k, v in complete.items() if k != key}
+        with pytest.raises(ValueError, match=key):
+            eligibility_identity(incomplete)
+    for key in ("row_indices", "snp_row_indices", "p_alt_derived"):
+        incomplete_arrays = {**complete, "array_sha256": {
+            k: v for k, v in complete["array_sha256"].items() if k != key
+        }}
+        with pytest.raises(ValueError, match=f"{key}_sha256"):
+            eligibility_identity(incomplete_arrays)
+    with pytest.raises(ValueError, match="row_indices_sha256"):
+        eligibility_identity({k: v for k, v in complete.items() if k != "array_sha256"})
+
 
 def test_candidate_builder_excludes_snp_a_target_from_vcf_eligible_b_pool(
     tmp_path, monkeypatch
@@ -176,6 +238,8 @@ def test_candidate_builder_excludes_snp_a_target_from_vcf_eligible_b_pool(
             "schema_version": "vcf-eligibility-v1",
             "eligible_rows": 3,
             "min_callable": 20,
+            "vcf_sha256": "vcf-fake-hash",
+            "heterozygous": "error",
             "store_content_sha256": "content",
             "store_catalog_sha256": "catalog",
         },
@@ -210,6 +274,33 @@ def test_candidate_builder_excludes_snp_a_target_from_vcf_eligible_b_pool(
     report = json.loads(output.with_suffix(".npy.json").read_text())
     assert report["universe_rows"] == 3
     assert report["vcf_eligibility"] == str(mask.resolve())
+    # Finding 4: the report binds the mask by content, not only by path.
+    published_metadata = json.loads((mask / "metadata.json").read_text())
+    assert report["vcf_eligibility_identity"] == eligibility_identity(published_metadata)
+
+
+def test_candidate_report_identity_is_null_without_vcf_eligibility(tmp_path, monkeypatch):
+    store = _store()
+    monkeypatch.setattr(build_candidate_rows, "open_snp_age_store", lambda _: store)
+    monkeypatch.setattr(build_candidate_rows, "store_schema", lambda _: "test-store")
+    monkeypatch.setattr(build_candidate_rows, "software_provenance", lambda: {})
+    monkeypatch.setattr(
+        build_candidate_rows,
+        "_resolve_lists",
+        lambda _store, paths, minimum_fraction, kind: (
+            np.array([3], dtype=np.int64), []
+        ),
+    )
+    output = tmp_path / "candidates.npy"
+    exclude = tmp_path / "exclude.txt"
+    assert build_candidate_rows.main([
+        "--store", str(tmp_path / "store"),
+        "--exclude-positions", str(exclude),
+        "--output", str(output),
+    ]) == 0
+    report = json.loads(output.with_suffix(".npy.json").read_text())
+    assert report["vcf_eligibility"] is None
+    assert report["vcf_eligibility_identity"] is None
 
 
 def test_loader_rejects_tampered_count_arrays(tmp_path):

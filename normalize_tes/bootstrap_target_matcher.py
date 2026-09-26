@@ -143,6 +143,87 @@ def bootstrap_cdf(counts: np.ndarray, cdf_rows: np.ndarray,
     return accumulated / total
 
 
+def median_age_strata(
+    store: object, rows: np.ndarray, boundary_ages: np.ndarray,
+    n_strata: int, *, block_rows: int = 4096, chunk_rows: int = 1 << 20,
+) -> np.ndarray:
+    """Assign each row to the target age stratum holding its median age.
+
+    The median is read off the row's CDF at the target's boundary ages: the
+    stratum is the one whose upper boundary is the first at which the CDF
+    reaches 0.5. Rows whose CDF never reaches 0.5 by the last boundary go to
+    the oldest stratum. This is the single definition shared by the
+    stratified initialisation and the disjoint capacity preflight, so the
+    preflight counts exactly the strata the initialiser fills.
+
+    CDFs are evaluated `chunk_rows` at a time and reduced to a stratum index
+    immediately, so memory stays bounded when the whole candidate universe is
+    scanned; chunking does not change any row's result.
+    """
+    indices = np.asarray(rows, dtype=np.int64)
+    ages = np.asarray(boundary_ages, dtype=np.float64)
+    if n_strata <= 0 or chunk_rows <= 0:
+        raise ValueError("stratum count and chunk size must be positive")
+    out = np.empty(indices.size, dtype=np.int32)
+    for start in range(0, indices.size, chunk_rows):
+        stop = min(start + chunk_rows, indices.size)
+        at_boundary = row_cdfs(store, indices[start:stop], ages,
+                               block_rows=block_rows, dtype=np.dtype("float32"))
+        # median age = first boundary whose CDF reaches 0.5
+        reached = at_boundary >= 0.5
+        stratum = np.where(reached.any(axis=1), reached.argmax(axis=1) - 1,
+                           n_strata - 1)
+        out[start:stop] = np.clip(stratum, 0, n_strata - 1)
+    return out
+
+
+def disjoint_stratum_capacity(
+    store: object, candidates: np.ndarray, boundary_ages: np.ndarray,
+    quotas: np.ndarray, *, block_rows: int = 4096,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return candidates per stratum and each stratum's capacity in sets.
+
+    Capacity is `candidates_in_stratum / quota`: how many disjoint sets could
+    fill that stratum's quota before it runs dry. Strata with a zero quota
+    impose no limit and report infinite capacity.
+    """
+    quotas = np.asarray(quotas, dtype=np.int64)
+    strata = median_age_strata(store, candidates, boundary_ages, quotas.size,
+                               block_rows=block_rows)
+    counts = np.bincount(strata, minlength=quotas.size).astype(np.int64)
+    capacity = np.divide(
+        counts.astype(np.float64), quotas.astype(np.float64),
+        out=np.full(quotas.size, np.inf), where=quotas > 0,
+    )
+    return counts, capacity
+
+
+def check_disjoint_stratum_capacity(
+    counts: np.ndarray, capacity: np.ndarray, quotas: np.ndarray,
+    replicates: int, *, show: int = 5,
+) -> None:
+    """Fail unless every stratum holds `replicates x quota` candidates."""
+    quotas = np.asarray(quotas, dtype=np.int64)
+    short = np.flatnonzero(counts < replicates * quotas)
+    if not short.size:
+        return
+    worst = short[np.argsort(capacity[short], kind="stable")][:show]
+    detail = "; ".join(
+        f"stratum {int(k)}: {int(counts[k]):,} candidates / quota "
+        f"{int(quotas[k]):,} = {capacity[k]:.1f} sets"
+        for k in worst
+    )
+    raise ValueError(
+        f"disjoint matching requires every target age stratum to hold "
+        f"{replicates:,} sets' worth of candidates (replicates x quota), but "
+        f"{short.size} of {quotas.size} strata fall short; the scarcest are "
+        f"{detail}. A stratum that runs dry would be back-filled from other "
+        "ages, so later replicates would match progressively worse. "
+        "Prespecify fewer replicates or use an alternate null design; "
+        "controls will not be silently reused."
+    )
+
+
 def stratified_initial_set(
     store: object, boundary_ages: np.ndarray, quotas: np.ndarray,
     candidates: np.ndarray, rng: np.random.Generator, *,
@@ -159,7 +240,8 @@ def stratified_initial_set(
 
     Candidates are assigned to a stratum by their median age, read off their
     CDF at the 21 boundary ages rather than on the full analysis grid, so this
-    costs one narrow read per sampled candidate. A pool of `oversample` times
+    costs one narrow read per sampled candidate. The assignment is
+    `median_age_strata`, shared with the disjoint capacity preflight. A pool of `oversample` times
     the target size is drawn first; any stratum the draw underfills is topped up
     from the unused remainder, so the returned set always has exactly the
     required size even where the pool is thin.
@@ -167,13 +249,7 @@ def stratified_initial_set(
     n_target = int(quotas.sum())
     pool = rng.choice(candidates, size=min(candidates.size, n_target * oversample),
                       replace=False)
-    at_boundary = row_cdfs(store, pool, np.asarray(boundary_ages, dtype=np.float64),
-                           block_rows=4096, dtype=np.dtype("float32"))
-    # median age = first boundary whose CDF reaches 0.5
-    reached = at_boundary >= 0.5
-    stratum = np.where(reached.any(axis=1), reached.argmax(axis=1) - 1,
-                       quotas.size - 1)
-    stratum = np.clip(stratum, 0, quotas.size - 1)
+    stratum = median_age_strata(store, pool, boundary_ages, quotas.size)
 
     chosen: list[np.ndarray] = []
     used = np.zeros(pool.size, dtype=bool)
@@ -422,6 +498,9 @@ def _validate_inputs(store: object, target_meta: dict, a_type: str) -> None:
             "age matching requires a final target built with --vcf-eligibility "
             "so A was filtered before its size and age CDF were fixed"
         )
+    _require_eligibility_identity(
+        eligibility.get("identity"), "target metadata vcf_eligibility.identity"
+    )
     te_polarity = target_meta.get("te_polarity")
     if a_type == "TE":
         if not isinstance(te_polarity, dict):
@@ -445,6 +524,62 @@ def _validate_inputs(store: object, target_meta: dict, a_type: str) -> None:
         raise ValueError("target and store content identities differ")
     if expected_catalog is not None and expected_catalog != actual_catalog:
         raise ValueError("target and store catalogs differ")
+
+
+VCF_ELIGIBILITY_IDENTITY_KEYS = (
+    "vcf_sha256", "heterozygous", "min_callable", "store_content_sha256",
+    "row_indices_sha256", "snp_row_indices_sha256", "p_alt_derived_sha256",
+)
+
+
+def _require_eligibility_identity(identity: object, label: str) -> dict:
+    """Require a complete VCF-eligibility identity record.
+
+    A path names a location, not the content at it, so the eligibility
+    artifact is identified by the VCF digest, genotype policy, callability
+    threshold, store and array digests it was built from.
+    """
+    if not isinstance(identity, dict):
+        raise ValueError(
+            f"{label} is missing; rebuild it with the current pipeline so the "
+            "VCF-eligibility artifact is identified by content, not by path"
+        )
+    missing = [
+        key for key in VCF_ELIGIBILITY_IDENTITY_KEYS
+        if identity.get(key) is None or identity.get(key) == ""
+    ]
+    if missing:
+        raise ValueError(f"{label} lacks {', '.join(missing)}")
+    return identity
+
+
+def _matched_eligibility_identity(target_meta: dict,
+                                  candidate_report: dict) -> dict:
+    """Require the candidate rows and target to share one eligibility artifact.
+
+    Both were filtered by a VCF-eligibility artifact; if those differ, A and
+    its controls were restricted to different callable universes and the
+    matched sets no longer answer the question being asked.
+    """
+    target_identity = _require_eligibility_identity(
+        (target_meta.get("vcf_eligibility") or {}).get("identity"),
+        "target metadata vcf_eligibility.identity",
+    )
+    candidate_identity = _require_eligibility_identity(
+        candidate_report.get("vcf_eligibility_identity"),
+        "candidate report vcf_eligibility_identity",
+    )
+    if candidate_identity != target_identity:
+        differing = sorted(
+            key for key in set(candidate_identity) | set(target_identity)
+            if candidate_identity.get(key) != target_identity.get(key)
+        )
+        raise ValueError(
+            "candidate rows and target were filtered by different VCF-eligibility "
+            f"artifacts (differing: {', '.join(differing)}); rebuild both from "
+            "the same eligibility artifact"
+        )
+    return target_identity
 
 
 def _authenticate_candidate_rows(path: Path, store: object,
@@ -516,13 +651,15 @@ def _candidate_array_digest(values: np.ndarray) -> str:
 
 
 def _candidate_rows(args: argparse.Namespace, store: object,
-                    target_rows: np.ndarray) -> tuple[np.ndarray, str | None]:
+                    target_rows: np.ndarray
+                    ) -> tuple[np.ndarray, str | None, dict | None]:
     if args.candidate_rows is None:
-        return eligible_candidates(store, target_rows, None), None
+        return eligible_candidates(store, target_rows, None), None, None
     raw = np.load(args.candidate_rows, allow_pickle=False)
-    _authenticate_candidate_rows(Path(args.candidate_rows), store, np.asarray(raw))
+    report = _authenticate_candidate_rows(
+        Path(args.candidate_rows), store, np.asarray(raw))
     rows = eligible_candidates(store, target_rows, raw)
-    return rows, _sha256_arrays(np.asarray(raw))
+    return rows, _sha256_arrays(np.asarray(raw)), report
 
 
 def _save_replicate_bundle(
@@ -681,6 +818,10 @@ def _write_outputs(
     target_digest: str,
     store_dir: Path,
     elapsed: float,
+    eligibility_identity: dict,
+    stratum_quotas: np.ndarray,
+    stratum_counts: np.ndarray | None = None,
+    stratum_capacity: np.ndarray | None = None,
 ) -> None:
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
@@ -899,6 +1040,20 @@ def _write_outputs(
             "elapsed_seconds": elapsed,
             "unique_controls_across_sets": int(unique_rows.size),
             "maximum_control_reuse": int(reuse.max()),
+            "vcf_eligibility_identity": eligibility_identity,
+            "stratum_quotas": [int(q) for q in stratum_quotas],
+            # Candidates per median-age stratum / quota, measured before any
+            # replicate ran; null for strata with no quota and outside
+            # disjoint mode, where no preflight is needed.
+            "disjoint_stratum_candidates": (
+                None if stratum_counts is None
+                else [int(c) for c in stratum_counts]
+            ),
+            "disjoint_stratum_capacity_sets": (
+                None if stratum_capacity is None
+                else [None if not math.isfinite(c) else float(c)
+                      for c in stratum_capacity]
+            ),
         }
         with (staging / "metadata.json").open("w", encoding="utf-8") as handle:
             json.dump(metadata, handle, indent=2, sort_keys=True)
@@ -939,9 +1094,18 @@ def run(args: argparse.Namespace) -> None:
     if int(quotas.sum()) != target_rows.size:
         raise ValueError("target quotas do not sum to the target set size")
     _validate_inputs(store, target_meta, args.a_type)
-    candidates, candidate_digest = _candidate_rows(args, store, target_rows)
+    candidates, candidate_digest, candidate_report = _candidate_rows(
+        args, store, target_rows)
+    # --all-eligible has no candidate report to compare, so only the target's
+    # identity is published; --candidate-rows must agree with it.
+    eligibility_identity = (
+        _matched_eligibility_identity(target_meta, candidate_report)
+        if candidate_report is not None
+        else target_meta["vcf_eligibility"]["identity"]
+    )
     if candidates.size <= target_rows.size:
         raise ValueError("candidate universe must exceed target set size")
+    stratum_counts = stratum_capacity = None
     if config.disjoint_replicates:
         required_candidates = config.replicates * target_rows.size
         if candidates.size < required_candidates:
@@ -953,6 +1117,22 @@ def run(args: argparse.Namespace) -> None:
                 "Prespecify fewer replicates or use an alternate null design; "
                 "controls will not be silently reused."
             )
+        # Total capacity is not enough: stratified_initial_set fills each age
+        # stratum's quota, and once a stratum runs dry it back-fills from
+        # other ages, so later replicates would match progressively worse
+        # while the total pool still looks ample. Check every stratum before
+        # any work directory or replicate state exists.
+        scan_started = time.perf_counter()
+        stratum_counts, stratum_capacity = disjoint_stratum_capacity(
+            store, candidates, boundary_ages, quotas)
+        print(
+            f"disjoint_stratum_capacity_sets min="
+            f"{float(np.min(stratum_capacity)):.1f} "
+            f"scan_seconds={time.perf_counter() - scan_started:.1f}",
+            flush=True,
+        )
+        check_disjoint_stratum_capacity(
+            stratum_counts, stratum_capacity, quotas, config.replicates)
     points = analysis_points(age_bins)
     exact_step = float(age_bins[1] - age_bins[0])
     if config.search_bin_width < exact_step:
@@ -1025,6 +1205,7 @@ def run(args: argparse.Namespace) -> None:
         "target_digest": target_digest,
         "source_store_content_sha256": getattr(store, "metadata", {}).get("content_sha256"),
         "candidate_rows_digest": candidate_digest,
+        "vcf_eligibility_identity": eligibility_identity,
         "a_type": args.a_type,
         "global_seed": args.seed,
         "config": asdict(config),
@@ -1062,9 +1243,9 @@ def run(args: argparse.Namespace) -> None:
         # published sets share no controls. That is zero membership OVERLAP, not
         # zero dependence: each replicate draws from a pool the earlier ones
         # depleted, and all of them bootstrap the same observed TE sample.
-        # Total capacity was checked before any work directory or replicate
-        # state was created. Retain this per-replicate guard as an invariant
-        # check in case the selection logic changes.
+        # Total and per-stratum capacity were checked before any work directory
+        # or replicate state was created. Retain this per-replicate guard as an
+        # invariant check in case the selection logic changes.
         if config.disjoint_replicates and claimed_arr.size:
             replicate_candidates = candidates[~np.isin(candidates, claimed_arr)]
             if replicate_candidates.size < target_rows.size:
@@ -1187,6 +1368,10 @@ def run(args: argparse.Namespace) -> None:
         target_digest=target_digest,
         store_dir=getattr(store, "store_dir", args.store),
         elapsed=time.perf_counter() - started,
+        eligibility_identity=eligibility_identity,
+        stratum_quotas=quotas,
+        stratum_counts=stratum_counts,
+        stratum_capacity=stratum_capacity,
     )
     if not args.keep_work:
         shutil.rmtree(work_dir)
@@ -1277,7 +1462,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="publish mutually disjoint sets: each replicate is optimized "
              "against the candidate universe minus every row already published, "
              "so no control SNP appears in two published sets. A preflight "
-             "requires at least replicates x target-sites candidates. This removes "
+             "requires at least replicates x target-sites candidates in total "
+             "and replicates x quota candidates in every target age stratum "
+             "(by median age). This removes "
              "shared membership, not statistical dependence: replicates still "
              "share the observed TE sample and the store, and later sets draw "
              "from a pool the earlier ones depleted",

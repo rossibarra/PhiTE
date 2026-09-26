@@ -114,6 +114,41 @@ class LoadedEligibility:
     callable_counts: np.ndarray
     p_alt_derived: np.ndarray | None
     metadata: dict
+    identity: dict
+
+
+_MISSING = object()
+
+
+def eligibility_identity(metadata: dict) -> dict:
+    """Return the content-addressed identity of a loaded eligibility mask.
+
+    Callers (the target and candidate-row reports) record this dict verbatim
+    so that a downstream consumer can require an exact match against it,
+    binding the artifact by what it contains rather than by where it was
+    resolved from. Raises ``ValueError`` if any of the required fields is
+    absent from ``metadata`` (or, for the array digests, from its nested
+    ``array_sha256``).
+    """
+    array_hashes = metadata.get("array_sha256")
+    if not isinstance(array_hashes, dict):
+        array_hashes = {}
+    fields = {
+        "vcf_sha256": metadata.get("vcf_sha256", _MISSING),
+        "heterozygous": metadata.get("heterozygous", _MISSING),
+        "min_callable": metadata.get("min_callable", _MISSING),
+        "store_content_sha256": metadata.get("store_content_sha256", _MISSING),
+        "row_indices_sha256": array_hashes.get("row_indices", _MISSING),
+        "snp_row_indices_sha256": array_hashes.get("snp_row_indices", _MISSING),
+        "p_alt_derived_sha256": array_hashes.get("p_alt_derived", _MISSING),
+    }
+    missing = [key for key, value in fields.items() if value is _MISSING or value is None]
+    if missing:
+        raise ValueError(
+            "eligibility metadata is missing required identity field(s): "
+            + ", ".join(missing)
+        )
+    return fields
 
 
 def _chromosome_map(store: object) -> dict[str, tuple[int, int]]:
@@ -462,8 +497,9 @@ def load_eligibility(
     minimum = int(metadata.get("min_callable", -1))
     if np.any(callable_counts < minimum) or np.any(alt_counts > callable_counts):
         raise SystemExit(f"{mask_dir}: stored allele/callability counts are inconsistent")
+    identity = eligibility_identity(metadata)
     if variant_type == "TE":
-        return LoadedEligibility(rows, alt_counts, callable_counts, None, metadata)
+        return LoadedEligibility(rows, alt_counts, callable_counts, None, metadata, identity)
 
     snp_rows = np.load(mask_dir / "snp_row_indices.npy", allow_pickle=False)
     q_values = np.load(mask_dir / "p_alt_derived.npy", allow_pickle=False)
@@ -495,6 +531,7 @@ def load_eligibility(
         callable_counts[indices],
         q_values,
         metadata,
+        identity,
     )
 
 

@@ -18,7 +18,7 @@ from .snp_age_dataset import load_native_position_list
 from .snp_age_store import is_interval_store, open_snp_age_store, store_schema
 from .snp_position_resolution import resolve_native_position_requests
 from .release_provenance import software_provenance
-from .vcf_eligibility import load_eligible_rows
+from .vcf_eligibility import load_eligibility
 
 
 @dataclass(frozen=True)
@@ -736,10 +736,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     eligibility_report: dict | None = None
     if args.vcf_eligibility is not None:
-        eligible_rows = load_eligible_rows(
+        loaded_eligibility = load_eligibility(
             args.vcf_eligibility, store, variant_type=args.a_type,
             expected_min_callable=20,
         )
+        eligible_rows = loaded_eligibility.rows
         eligible = target_eligibility_mask(included_rows, eligible_rows)
         before = int(eligible.size)
         if not eligible.any():
@@ -762,6 +763,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "sites_before": before,
             "sites_removed": int((~eligible).sum()),
             "sites_kept": int(eligible.sum()),
+            "identity": loaded_eligibility.identity,
         }
         print(
             f"VCF eligibility {eligibility_report['sites_removed']:,} of "

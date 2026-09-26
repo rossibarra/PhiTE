@@ -19,7 +19,8 @@
 # It requires mutually disjoint controls across all 1201 sets: one reference,
 # 1000 nulls, and 200 spares that replace sets failing matching QC. The matcher
 # fails before creating replicate state when the candidate universe cannot hold
-# REPLICATES x target-size unique SNPs; it never silently falls back to reuse.
+# REPLICATES x target-size unique SNPs, or when any target age stratum holds
+# fewer than REPLICATES x its quota; it never silently falls back to reuse.
 #
 # Submit with sbatch, never srun: an srun started from an interactive shell dies
 # with that shell, which is how the first production attempt was lost at 48
@@ -138,19 +139,47 @@ if (( free_kib < required_kib * 6 / 5 + headroom_kib )); then
     exit 2
 fi
 
-python - "$CANDIDATE_REPORT" "$VCF_ELIGIBILITY" <<'PYEOF'
+# VCF eligibility is compared by content, not path: a path names a location,
+# not what is at it. The identity (VCF digest, genotype policy, callability
+# threshold, store and array digests) is computed once from the requested
+# artifact's metadata.json and must equal the one recorded by the candidate
+# report here and by the target below. The matcher itself also requires the
+# candidate report and target to agree, so this launcher check only adds the
+# binding to the artifact named by VCF_ELIGIBILITY.
+ELIGIBILITY_IDENTITY="$(python - "$VCF_ELIGIBILITY" <<'PYEOF'
 import json, sys
 from pathlib import Path
 
+metadata_path = Path(sys.argv[1]) / "metadata.json"
+if not metadata_path.is_file():
+    raise SystemExit(f"missing VCF eligibility metadata: {metadata_path}")
+metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+if metadata.get("complete") is not True:
+    raise SystemExit(f"{metadata_path} is not a complete eligibility artifact")
+from normalize_tes.vcf_eligibility import eligibility_identity
+print(json.dumps(eligibility_identity(metadata), sort_keys=True))
+PYEOF
+)"
+export ELIGIBILITY_IDENTITY
+
+python - "$CANDIDATE_REPORT" "$VCF_ELIGIBILITY" <<'PYEOF'
+import json, os, sys
+from pathlib import Path
+
 report_path, eligibility = map(Path, sys.argv[1:])
+wanted = json.loads(os.environ["ELIGIBILITY_IDENTITY"])
 if not report_path.is_file():
     raise SystemExit(f"missing candidate provenance report: {report_path}")
 report = json.loads(report_path.read_text(encoding="utf-8"))
-used = report.get("vcf_eligibility")
-if used is None or Path(used).resolve() != eligibility.resolve():
+used = report.get("vcf_eligibility_identity")
+if used != wanted:
+    differing = sorted(
+        key for key in set(wanted) | set(used or {})
+        if (used or {}).get(key) != wanted.get(key)
+    )
     raise SystemExit(
-        f"{report_path} records VCF eligibility {used!r}, but this run requests "
-        f"{str(eligibility.resolve())!r}"
+        f"{report_path} was built from a different VCF eligibility artifact than "
+        f"{eligibility} (identity fields differing: {', '.join(differing)})"
     )
 PYEOF
 # A masked target does not use the scratch-backed CDF writer: te_age_target
@@ -208,7 +237,7 @@ else
     # mask is silently unused, and nothing in the output says so.
     echo "=== target $TARGET already exists; verifying it matches the request ==="
     python - "$TARGET" "$A_TYPE" "$VCF_ELIGIBILITY" "$TE_POLARITY_MASK" "$MAX_FLIPPED_FRACTION" <<'PYEOF'
-import json, sys
+import json, os, sys
 from pathlib import Path
 
 target, a_type, eligibility, requested_mask, requested_fraction = sys.argv[1:]
@@ -218,12 +247,18 @@ recorded = meta.get("te_polarity") or None
 if meta.get("a_type") != a_type:
     raise SystemExit(f"{target} records a_type={meta.get('a_type')!r}, requested {a_type!r}")
 eligibility_record = meta.get("vcf_eligibility") or {}
-used_eligibility = str(Path(eligibility_record.get("mask", "")).resolve())
+used_identity = eligibility_record.get("identity")
+wanted_identity = json.loads(os.environ["ELIGIBILITY_IDENTITY"])
 wanted_eligibility = str(Path(eligibility).resolve())
-if used_eligibility != wanted_eligibility:
+if used_identity != wanted_identity:
+    differing = sorted(
+        key for key in set(wanted_identity) | set(used_identity or {})
+        if (used_identity or {}).get(key) != wanted_identity.get(key)
+    )
     raise SystemExit(
-        f"{target} was built with VCF eligibility {used_eligibility}, "
-        f"but VCF_ELIGIBILITY requests {wanted_eligibility}."
+        f"{target} was built from a different VCF eligibility artifact than "
+        f"VCF_ELIGIBILITY={wanted_eligibility} (identity fields differing: "
+        f"{', '.join(differing)})."
     )
 
 if a_type == "SNP":
