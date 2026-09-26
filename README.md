@@ -488,8 +488,11 @@ sampling floor separately for every focal category rather than comparing raw
 The matcher publishes $R+1+K$ sets, with $K=200$ spares in production, so that $R$
 stays fixed at 1000 in every category even when some sets fail matching QC. Phi-SFS
 uses $B_0$ plus the first $R$ QC-passing sets in replicate-ID order and records the
-unused spares. QC depends only on age matching, so this selection cannot depend on
-any SFS. All published sets must be globally disjoint.
+unused spares. QC is computed only from age matching and does not directly inspect the
+SFS. However, because allele age and allele frequency are related, selection on
+age-matching QC is not guaranteed to be neutral with respect to the resulting SFS.
+This is an inherent limitation of the selection scheme and should be considered when
+interpreting calibrated results. All published sets must be globally disjoint.
 Thus every control SNP has maximum reuse one and every $B_i$ has zero overlap with
 $B_0$. Set 0 is designated as $B_0$ before any SFS is examined; it differs from the
 other sets only in being held fixed in the distance calculations.
