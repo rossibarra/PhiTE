@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## v0.9.0-rc1 — 2026-09-27
+
+This release candidate changes the production Phi-SFS null to reproduce the
+known-versus-uncertain polarity structure of the observed TE-versus-SNP
+comparison. It is published for final capacity, depletion, and negative-control
+validation before the v0.9.0 release.
+
+### Bernoulli-q asymmetric polarity null
+
+- The production default is now
+  `bernoulli-q-hard-vs-posterior-mixture`: retained TEs remain biologically
+  hard-polarized, the reference SNP set B0 retains its posterior q-mixture, and
+  every null-left SNP receives one reproducible coordinate-keyed
+  Bernoulli(q) hard orientation.
+- SNP-versus-SNP negative controls hard-orient focal A with the same
+  Bernoulli(q) rule. `--no-asymmetric-polarity-null` retains the legacy
+  mixture-versus-mixture calculation only for comparison.
+- Phi-SFS output is now `phi-sfs-wasserstein-v2`. Category contrasts require
+  v2 inputs with the same recorded null-polarity design and reject mixed legacy
+  and asymmetric results.
+- The Farm launcher defaults to `ASYMMETRIC_POLARITY_NULL=true` and
+  `POLARITY_IMPUTATION_SEED=2001`.
+
+### Preliminary SNP negative control
+
+- A held-out real-SNP pilot rejected 7 of 100 pseudo-focal SNP sets at
+  alpha=0.05. The descriptive Wilson interval was 0.034--0.137.
+- This is not final calibration: the tests shared one reference and empirical
+  null vector, and the interrupted matcher prefix supplying the sets had zero
+  replicates below the production matching-error-ratio threshold.
+
 ### Null replicates and the reference set
 
 - The matcher publishes 1001 disjoint sets by default, down from 1201. The in-gene

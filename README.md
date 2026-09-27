@@ -1,4 +1,4 @@
-# PhiTE v0.8.0
+# PhiTE v0.9.0-rc1
 
 PhiTE builds neutral SNP control sets matched to the posterior ages of a focal
 variant category, then compares their unfolded site-frequency spectra. Dataset A may
