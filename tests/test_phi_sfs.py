@@ -19,6 +19,7 @@ from normalize_tes.phi_sfs import (
     normalized_spectrum,
     phi_sfs,
     project_sites,
+    project_sites_bernoulli_q,
 )
 from normalize_tes.sample_age_matched_controls import _sha256_arrays
 
@@ -96,6 +97,25 @@ def test_sites_are_not_renormalized_after_endpoint_removal():
     assert raw_counts.sum() + endpoint == pytest.approx(eligible)
     raw, normalized = normalized_spectrum(raw_counts)
     assert normalized.sum() == pytest.approx(1)
+
+
+def test_bernoulli_q_projection_is_hard_reproducible_and_has_expected_rate():
+    counts = {
+        ("chr1", i): SiteCount(alt=4, callable=20, p_alt_derived=0.3)
+        for i in range(1, 10_001)
+    }
+    rows1, projected1, _ = project_sites_bernoulli_q(counts, seed=17)
+    rows2, projected2, _ = project_sites_bernoulli_q(
+        dict(reversed(counts.items())), seed=17
+    )
+    alt_derived = np.array([
+        projected1[rows1[coordinate]][3] == 1 for coordinate in counts
+    ])
+    assert alt_derived.mean() == pytest.approx(0.3, abs=0.015)
+    for coordinate in counts:
+        np.testing.assert_array_equal(
+            projected1[rows1[coordinate]], projected2[rows2[coordinate]]
+        )
 
 
 def test_accumulation_is_order_invariant_and_counts_repeats():
@@ -712,6 +732,47 @@ def test_end_to_end_snp_a_uses_posterior_polarity(tmp_path):
     summary = dict(zip(header, values))
     assert summary["a_type"] == "SNP"
     assert summary["b_type"] == "SNP"
+
+
+def test_asymmetric_null_uses_hard_snp_left_and_mixture_reference(tmp_path):
+    target, matches = _write_bundle(tmp_path, a_type="SNP")
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    table = _ancestral_table(tmp_path)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[:, 0] = 25
+    counts[:, 2] = 75
+    np.save(table / "ancestral_counts.npy", counts)
+    np.save(
+        table / "present_draw_count.npy",
+        np.full(counts.shape[0], 100, dtype=np.uint16),
+    )
+
+    output = tmp_path / "phi"
+    assert _run(
+        target, matches, vcf, output,
+        "-A", "SNP", "-B", "SNP", "--ancestral-table", str(table),
+        "--asymmetric-polarity-null", "--polarity-imputation-seed", "17",
+    ) == 0
+    a = np.load(output / "a_normalized_sfs.npy")
+    b_mix = np.load(output / "b_normalized_sfs.npy")
+    b_hard = np.load(output / "b_bernoulli_q_normalized_sfs.npy")
+    assert np.count_nonzero(a) == 2
+    assert not np.array_equal(b_mix, b_hard)
+    assert np.load(output / "observed_phi_sfs.npy").item() == pytest.approx(
+        phi_sfs(a, b_mix[0]).value
+    )
+    assert np.load(output / "null_phi_sfs.npy").tolist() == pytest.approx([
+        phi_sfs(b_hard[1], b_mix[0]).value,
+        phi_sfs(b_hard[2], b_mix[0]).value,
+    ])
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["asymmetric_polarity_null"] is True
+    assert metadata["polarity_imputation_seed"] == 17
+    assert metadata["a_polarity_rule"] == "coordinate-keyed hard Bernoulli(q) orientation"
+    assert metadata["null_left_polarity_rule"] == (
+        "coordinate-keyed hard Bernoulli(q) orientation"
+    )
 
 
 def test_explicit_reference_id_controls_b0_and_null_identities(tmp_path):

@@ -220,6 +220,54 @@ def project_sites(
     return rows, projections, np.asarray(endpoints, dtype=np.float64)
 
 
+def _site_uniform(seed: int, coordinate: tuple[str, int]) -> float:
+    """Return a stable coordinate-keyed U[0,1) variate."""
+    chrom, position = coordinate
+    payload = f"phi-sfs-bernoulli-q-v1\0{seed}\0{chrom}\0{position}".encode()
+    value = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+    return value / 2**64
+
+
+def project_sites_bernoulli_q(
+    counts: dict[tuple[str, int], SiteCount],
+    *,
+    seed: int,
+) -> tuple[dict[tuple[str, int], int], np.ndarray, np.ndarray]:
+    """Project sites after one reproducible hard orientation drawn from q.
+
+    For q = P(ALT derived | ARG), ALT is declared derived when a
+    coordinate-keyed U[0,1) draw is below q; otherwise REF is declared derived.
+    The expected hard projection is therefore the posterior-mixture projection.
+    """
+    rows: dict[tuple[str, int], int] = {}
+    distinct: dict[tuple[int, int, bool], int] = {}
+    retained: list[np.ndarray] = []
+    endpoints: list[float] = []
+    for coordinate, item in counts.items():
+        if item.callable < PROJECTION_SIZE:
+            continue
+        q = float(item.p_alt_derived)
+        if not 0.0 <= q <= 1.0:
+            raise ValueError(f"polarity weight out of range at {coordinate}: {q}")
+        alt_derived = _site_uniform(seed, coordinate) < q
+        key = (item.alt, item.callable, alt_derived)
+        row = distinct.get(key)
+        if row is None:
+            vector = hypergeometric_projection(item.alt, item.callable)
+            if not alt_derived:
+                vector = vector[::-1]
+            row = len(retained)
+            distinct[key] = row
+            retained.append(vector[1:PROJECTION_SIZE])
+            endpoints.append(float(vector[0] + vector[PROJECTION_SIZE]))
+        rows[coordinate] = row
+    projections = (
+        np.asarray(retained, dtype=np.float64) if retained
+        else np.zeros((0, PROJECTION_SIZE - 1), dtype=np.float64)
+    )
+    return rows, projections, np.asarray(endpoints, dtype=np.float64)
+
+
 def accumulate_spectrum(
     coordinates: Sequence[tuple[str, int]],
     rows: dict[tuple[str, int], int],
@@ -1054,14 +1102,23 @@ def calculate(args: argparse.Namespace) -> None:
         raise ValueError(f"{len(missing)} requested sites are absent from the VCF: {preview}")
 
     site_rows, projections, endpoints = project_sites(counts)
+    hard_site_rows = hard_projections = hard_endpoints = None
+    if args.asymmetric_polarity_null:
+        hard_site_rows, hard_projections, hard_endpoints = project_sites_bernoulli_q(
+            counts, seed=args.polarity_imputation_seed,
+        )
     print(
         f"Projected {projections.shape[0]:,} distinct (k, n) pairs "
         f"covering {len(site_rows):,} eligible sites",
         flush=True,
     )
 
+    a_uses_hard_imputation = args.asymmetric_polarity_null and args.a_type == "SNP"
     a_counts, a_endpoint, a_eligible = accumulate_spectrum(
-        te_coordinates, site_rows, projections, endpoints
+        te_coordinates,
+        hard_site_rows if a_uses_hard_imputation else site_rows,
+        hard_projections if a_uses_hard_imputation else projections,
+        hard_endpoints if a_uses_hard_imputation else endpoints,
     )
     if a_eligible != site_count:
         raise ValueError(
@@ -1073,6 +1130,11 @@ def calculate(args: argparse.Namespace) -> None:
     b_raw_all = np.empty((len(used_snp_coordinates), PROJECTION_SIZE - 1), dtype=np.float64)
     b_normalized_all = np.empty_like(b_raw_all)
     b_endpoints_all = np.empty(len(used_snp_coordinates), dtype=np.float64)
+    b_hard_raw_all = b_hard_normalized_all = b_hard_endpoints_all = None
+    if args.asymmetric_polarity_null:
+        b_hard_raw_all = np.empty_like(b_raw_all)
+        b_hard_normalized_all = np.empty_like(b_raw_all)
+        b_hard_endpoints_all = np.empty_like(b_endpoints_all)
 
     for position, coordinates in enumerate(used_snp_coordinates):
         counts_vector, endpoint, eligible = accumulate_spectrum(
@@ -1089,9 +1151,23 @@ def calculate(args: argparse.Namespace) -> None:
         b_raw_all[position] = raw
         b_normalized_all[position] = normalized
         b_endpoints_all[position] = endpoint
+        if args.asymmetric_polarity_null:
+            hard_counts, hard_endpoint, hard_eligible = accumulate_spectrum(
+                coordinates, hard_site_rows, hard_projections, hard_endpoints
+            )
+            if hard_eligible != site_count:
+                raise RuntimeError("Bernoulli-q projection changed SNP eligibility")
+            hard_raw, hard_normalized = normalized_spectrum(hard_counts)
+            b_hard_raw_all[position] = hard_raw
+            b_hard_normalized_all[position] = hard_normalized
+            b_hard_endpoints_all[position] = hard_endpoint
 
     daf = RETAINED_BINS.astype(np.float64) / PROJECTION_SIZE
     b_cdf_all = np.cumsum(b_normalized_all, axis=1)
+    b_hard_cdf_all = (
+        np.cumsum(b_hard_normalized_all, axis=1)
+        if args.asymmetric_polarity_null else None
+    )
 
     # The primary result is read out of the shared scan above by position, so
     # it is identical whether or not sensitivity pulled extra sets into that
@@ -1101,16 +1177,24 @@ def calculate(args: argparse.Namespace) -> None:
     b_normalized = b_normalized_all[accepted_positions]
     b_endpoints = b_endpoints_all[accepted_positions]
     b_cdf = b_cdf_all[accepted_positions]
+    b_hard_raw = b_hard_normalized = b_hard_endpoints = b_hard_cdf = None
+    if args.asymmetric_polarity_null:
+        b_hard_raw = b_hard_raw_all[accepted_positions]
+        b_hard_normalized = b_hard_normalized_all[accepted_positions]
+        b_hard_endpoints = b_hard_endpoints_all[accepted_positions]
+        b_hard_cdf = b_hard_cdf_all[accepted_positions]
     reference_sfs = b_normalized[reference_index]
     reference_cdf = b_cdf[reference_index]
     observed_result = phi_sfs(a_normalized, reference_sfs, daf=daf)
+    null_cdf = b_hard_cdf if args.asymmetric_polarity_null else b_cdf
+    null_sfs = b_hard_normalized if args.asymmetric_polarity_null else b_normalized
     null_phi = (
-        np.abs(b_cdf[null_indices, :-1] - reference_cdf[:-1])
+        np.abs(null_cdf[null_indices, :-1] - reference_cdf[:-1])
         * np.diff(daf)
     ).sum(axis=1)
     calibration = calibrate_phi(observed_result.value, null_phi)
     null_mean_daf_difference = (
-        (b_normalized[null_indices] - reference_sfs) @ daf
+        (null_sfs[null_indices] - reference_sfs) @ daf
     )
 
     # Reference sensitivity: rerun the same phi_sfs/calibrate_phi pair once
@@ -1131,8 +1215,12 @@ def calculate(args: argparse.Namespace) -> None:
         alt_reference_sfs = alt_normalized[alt_reference_local]
         alt_reference_cdf = alt_cdf[alt_reference_local]
         alt_result = phi_sfs(a_normalized, alt_reference_sfs, daf=daf)
+        alt_null_cdf = (
+            b_hard_cdf_all[alt_positions]
+            if args.asymmetric_polarity_null else alt_cdf
+        )
         alt_null_phi = (
-            np.abs(alt_cdf[alt_null_local, :-1] - alt_reference_cdf[:-1])
+            np.abs(alt_null_cdf[alt_null_local, :-1] - alt_reference_cdf[:-1])
             * np.diff(daf)
         ).sum(axis=1)
         alt_calibration = calibrate_phi(alt_result.value, alt_null_phi)
@@ -1197,9 +1285,13 @@ def calculate(args: argparse.Namespace) -> None:
             "mean_daf_difference": null_mean_daf_difference[null_offset],
             "left_sites": site_count,
             "right_sites": site_count,
-            "left_retained_mass": float(b_raw[accepted_index].sum()),
+            "left_retained_mass": float(
+                (b_hard_raw if args.asymmetric_polarity_null else b_raw)[accepted_index].sum()
+            ),
             "right_retained_mass": reference_retained_mass,
-            "left_endpoint_mass": b_endpoints[accepted_index],
+            "left_endpoint_mass": (
+                b_hard_endpoints if args.asymmetric_polarity_null else b_endpoints
+            )[accepted_index],
             "right_endpoint_mass": b_endpoints[reference_index],
             "left_matching_qc_pass": True,
             "left_bootstrap_to_observed_w1": bootstrap_to_observed[source_index],
@@ -1260,6 +1352,12 @@ def calculate(args: argparse.Namespace) -> None:
                 sensitivity_p_values, dtype=np.float64
             ),
         }
+        if args.asymmetric_polarity_null:
+            arrays.update({
+                "b_bernoulli_q_raw_sfs.npy": b_hard_raw,
+                "b_bernoulli_q_normalized_sfs.npy": b_hard_normalized,
+                "b_bernoulli_q_cdf.npy": b_hard_cdf,
+            })
         for name, values in arrays.items():
             np.save(staging / name, values, allow_pickle=False)
 
@@ -1332,10 +1430,27 @@ def calculate(args: argparse.Namespace) -> None:
             "a_polarity_rule": (
                 "insertion presence is derived after upstream at-least-50%-derived "
                 "retention" if args.a_type == "TE" else
-                "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
+                (
+                    "coordinate-keyed hard Bernoulli(q) orientation"
+                    if args.asymmetric_polarity_null else
+                    "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
+                )
             ),
             "b_polarity_rule": (
                 "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
+            ),
+            "null_left_polarity_rule": (
+                "coordinate-keyed hard Bernoulli(q) orientation"
+                if args.asymmetric_polarity_null else
+                "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
+            ),
+            "asymmetric_polarity_null": args.asymmetric_polarity_null,
+            "polarity_imputation_seed": (
+                args.polarity_imputation_seed if args.asymmetric_polarity_null else None
+            ),
+            "polarity_imputation_algorithm": (
+                "sha256(phi-sfs-bernoulli-q-v1, seed, chromosome, position)"
+                if args.asymmetric_polarity_null else None
             ),
             "ancestral_table": str(Path(args.ancestral_table).resolve()),
             "ancestral_table_schema_version": store_meta.get("schema_version"),
@@ -1461,6 +1576,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--ancestral-table", type=Path, required=True,
         help="directory written by normalize_tes.build_ancestral_states, giving SNP "
              "sites their posterior polarity; A uses it when --a-type SNP",
+    )
+    parser.add_argument(
+        "--asymmetric-polarity-null", action="store_true",
+        help="experimental known-versus-uncertain polarity calibration: keep B0 "
+             "as the posterior q-mixture, but hard-polarize each null-left SNP "
+             "with a Bernoulli(q) draw; with -A SNP, hard-polarize A the same way",
+    )
+    parser.add_argument(
+        "--polarity-imputation-seed", type=int, default=2001,
+        help="seed for coordinate-keyed Bernoulli(q) hard orientations "
+             "(default: 2001; used only with --asymmetric-polarity-null)",
     )
     parser.add_argument("--heterozygous", choices=("error", "missing"), default="error",
                         help="how to treat a heterozygous call in these inbred "
