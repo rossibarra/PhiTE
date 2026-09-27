@@ -259,7 +259,7 @@ the complete resolved TE list. The final target applies both filters before fixi
 $M$.
 
 Sizing note: an unmasked target streams its TE-by-age CDF through `--scratch-dir`,
-so scratch is the constraint. A masked target (step 5) does not — it builds the
+so scratch is the constraint. A masked target (step 7) does not — it builds the
 whole CDF block in memory — so there `--mem` is the constraint, and the run prints
 its projected peak before building. Measured resource figures are in
 [BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
@@ -408,8 +408,8 @@ the calculation asserts that A and every accepted B set retain exactly the same 
 sites rather than silently dropping or downsampling sites.
 
 `--reference-sensitivity` reruns the primary selection rule once per alternative
-reference (each gets its own first-$R$-QC-passing non-reference null set, so the
-primary $B_0$ can become a null in that rerun) and publishes
+reference (each uses every other QC-passing set as its nulls, so the primary $B_0$
+becomes a null in that rerun) and publishes
 `sensitivity_reference_ids.npy`, `sensitivity_observed_phi_sfs.npy`,
 `sensitivity_z_scores.npy`, and `sensitivity_p_values.npy`, plus
 `reference_sensitivity_n`/`_z_min`/`_z_max`/`_p_min`/`_p_max` columns in
@@ -438,7 +438,8 @@ $$
 = \int_0^1 \left|F_A(x)-F_{B_0}(x)\right|\,dx.
 $$
 
-For equally spaced projected DAF bins $x_j=j/m$, calculate this exactly as
+For equally spaced projected DAF bins $x_j=j/m$, where $m=20$ is the projection
+sample size, calculate this exactly as
 
 $$
 \Phi_{\mathrm{SFS}}(A,B_0)
@@ -485,7 +486,7 @@ The production calibration is asymmetric because the observed TE comparison is
 itself asymmetric:
 
 $$
-D_{\mathrm{obs}}
+\Phi_{\mathrm{obs}}
 =\Phi_{\mathrm{SFS}}(A_{\mathrm{TE,hard}},B_{0,\mathrm{mixture}}).
 $$
 
@@ -495,7 +496,7 @@ derived when a reproducible coordinate-keyed uniform variate is less than $q$;
 otherwise REF is declared derived. The null distances are
 
 $$
-D_i^0
+\Phi_i^0
 =\Phi_{\mathrm{SFS}}(B_{i,\mathrm{Bernoulli}(q)\ hard},
                      B_{0,\mathrm{mixture}}).
 $$
@@ -528,30 +529,33 @@ sampling floor separately for every focal category rather than comparing raw
 
 1. For a focal set $A$ containing $M$ variants, generate one reference SNP set $B_0$
    and $R$ additional SNP sets $B_1,\ldots,B_R$. The existing matcher generates all
-   $R+1$ sets identically: each independently bootstraps the observed A-site ages and
-   matches exactly $M$ SNPs to that bootstrap age CDF. All sets use the shared samples,
+   $R+1$ sets by the same procedure: each independently bootstraps the observed
+   A-site ages and matches exactly $M$ SNPs to that bootstrap age CDF. Because
+   disjoint matching draws later sets from a depleted pool, the sets are not
+   identically distributed; drawing $B_0$ at random (below) is what makes it
+   exchangeable with the nulls. All sets use the shared samples,
    callability, and data-quality rules, with the type-specific polarity rules above.
 2. Keep $B_0$ mixture-polarized and calculate the observed distance
-   $D_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A_{\mathrm{hard}},
+   $\Phi_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A_{\mathrm{hard}},
    B_{0,\mathrm{mixture}})$.
 3. Hard-orient each non-reference $B_i$ with one coordinate-keyed
    Bernoulli-$q$ draw per SNP and calculate
-   $D_i^0=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{Bernoulli}(q)\ hard},
-   B_{0,\mathrm{mixture}})$, for $i=1,\ldots,R$. Here $D_i^0$ is a raw
+   $\Phi_i^0=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{Bernoulli}(q)\ hard},
+   B_{0,\mathrm{mixture}})$, for $i=1,\ldots,R$. Here $\Phi_i^0$ is a raw
    Φ-SFS distance between two neutral SNP sets under the asymmetric polarity
    design, not a Z-score.
 4. Let $μ_0$ and $s_0$ be the mean and sample standard deviation of the
-   $D_i^0$. Report the null-standardized effect size
+   $\Phi_i^0$. Report the null-standardized effect size
 
    $$
-   Z_A=\frac{D_{\mathrm{obs}}-\mu_0}{s_0}.
+   Z_A=\frac{\Phi_{\mathrm{obs}}-\mu_0}{s_0}.
    $$
 
 5. Report the one-sided Monte Carlo P-value
 
    $$
    P_A=\frac{1+\sum_{i=1}^{R}
-   \mathbf{1}\!\left(D_i^0\ge D_{\mathrm{obs}}\right)}{R+1}.
+   \mathbf{1}\!\left(\Phi_i^0\ge \Phi_{\mathrm{obs}}\right)}{R+1}.
    $$
 
 The matcher publishes 1001 disjoint sets. Phi-SFS draws the mixture-polarized $B_0$
@@ -567,8 +571,9 @@ This is an inherent limitation of the selection scheme and should be considered 
 interpreting calibrated results. All published sets must be globally disjoint.
 Thus every control SNP has maximum reuse one and every $B_i$ has zero overlap with
 $B_0$. $B_0$ is drawn before any SFS is examined, so it is exchangeable with the
-other QC-passing sets. Replicate 0 is not used by default because it is matched
-first, from the undepleted pool, and so is not a typical set. $B_0$ differs from the
+other QC-passing sets. Replicate 0 is no longer the default $B_0$, because it is
+matched first, from the undepleted pool, and so is not a typical set; it can still
+be drawn as $B_0$ or used as a null like any other QC-passing set. $B_0$ differs from the
 other sets only in being held fixed in the distance calculations.
 
 With $R$ near 1000 the minimum attainable P-value is about $1/(R+1)\approx10^{-3}$. Plot one equal-size point per focal category at
@@ -738,7 +743,7 @@ the printed job IDs. Check the mask jobs before trusting the dependent runs, and
 `squeue`, `sacct`, and the scheduler logs to confirm that every manifest row completed.
 
 This loop intentionally does not rebuild preliminary targets: no current production
-launcher performs a target-only run. Build those targets first using step 3 in
+launcher performs a target-only run. Build those targets first using step 5 in
 scheduled compute allocations. It also does not silently skip existing masks or
 outputs; for a partial rerun, submit only the missing categories or resubmit an
 interrupted matcher with its original target, output, work directory, and seed.
@@ -798,7 +803,8 @@ their spread.
 - [BOOTSTRAP_DISCARDED_APPROACHES.md](docs/BOOTSTRAP_DISCARDED_APPROACHES.md) — evaluated
   approaches that are not part of the production route.
 - [CHANGELOG.md](docs/CHANGELOG.md) — release-level behavior changes.
-- [CODE_REVIEW_ROUND9.md](docs/CODE_REVIEW_ROUND9.md) — latest implementation review.
+- [CODE_REVIEW_ROUND12.md](docs/CODE_REVIEW_ROUND12.md) — latest review: statistical
+  design of the Phi-SFS calibration and the matching-QC blocker.
 
 Historical `INTERVAL_STORE_*`, `GLOBAL_QUANTILE_*`, sampler plans, and older code
 reviews document development history; they are not operator instructions.
