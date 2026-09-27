@@ -15,9 +15,10 @@ Input assumptions, all of which are recorded in the output metadata:
   filtered preprocessing VCF, so every record at a requested coordinate is used.
 * The VCF is **not** assumed to be polarized, and no REF or INFO annotation is
   consulted. TE sites are polarized by biology -- an insertion is the derived
-  state -- and SNPs in either A or B by the ARG-derived table given to
-  `--ancestral-table`, as a posterior-weighted mixture over the two observed
-  alleles.
+  state. The reference SNP set B0 is represented by the ARG posterior mixture,
+  while each null-left SNP and a SNP focal A are hard-oriented by a reproducible
+  Bernoulli(q) draw by default. This asymmetric null reproduces the observed
+  comparison's hard-versus-uncertain polarity architecture.
 """
 
 from __future__ import annotations
@@ -49,7 +50,13 @@ from .vcf_io import (  # noqa: F401 -- re-exported for existing callers
 )
 
 
-SCHEMA_VERSION = "phi-sfs-wasserstein-v1"
+SCHEMA_VERSION = "phi-sfs-wasserstein-v2"
+ASYMMETRIC_NULL_DESIGN = (
+    "bernoulli-q-hard-vs-posterior-mixture"
+)
+SYMMETRIC_NULL_DESIGN = (
+    "posterior-mixture-vs-posterior-mixture"
+)
 
 # The only supported matched-control schema, and the per-replicate identifier
 # array it publishes. The bootstrap-target matcher produces replicates with no
@@ -1244,6 +1251,22 @@ def calculate(args: argparse.Namespace) -> None:
     a_retained_mass = float(a_raw.sum())
     reference_retained_mass = float(b_raw[reference_index].sum())
     reference_max_control_reuse = max_control_reuse(reference_rows)
+    mixture_polarity_rule = (
+        "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
+    )
+    hard_polarity_rule = "coordinate-keyed hard Bernoulli(q) orientation"
+    a_polarity_rule = (
+        "insertion presence is derived after upstream at-least-50%-derived retention"
+        if args.a_type == "TE"
+        else hard_polarity_rule if args.asymmetric_polarity_null else mixture_polarity_rule
+    )
+    null_left_polarity_rule = (
+        hard_polarity_rule if args.asymmetric_polarity_null else mixture_polarity_rule
+    )
+    null_polarity_design = (
+        ASYMMETRIC_NULL_DESIGN
+        if args.asymmetric_polarity_null else SYMMETRIC_NULL_DESIGN
+    )
 
     comparison_rows: list[dict[str, object]] = [{
         "role": "observed",
@@ -1251,6 +1274,8 @@ def calculate(args: argparse.Namespace) -> None:
         "left_type": args.a_type,
         "right_id": reference_id,
         "right_type": args.b_type,
+        "left_polarity_rule": a_polarity_rule,
+        "right_polarity_rule": mixture_polarity_rule,
         "phi_sfs": observed_result.value,
         "null_z_score": "",
         "mean_daf_difference": observed_result.mean_daf_difference,
@@ -1280,6 +1305,8 @@ def calculate(args: argparse.Namespace) -> None:
             "left_type": args.b_type,
             "right_id": reference_id,
             "right_type": args.b_type,
+            "left_polarity_rule": null_left_polarity_rule,
+            "right_polarity_rule": mixture_polarity_rule,
             "phi_sfs": calibration.null[null_offset],
             "null_z_score": calibration.null_z_scores[null_offset],
             "mean_daf_difference": null_mean_daf_difference[null_offset],
@@ -1377,6 +1404,10 @@ def calculate(args: argparse.Namespace) -> None:
             "p_value": calibration.p_value,
             "minimum_attainable_p": 1.0 / (null_count + 1.0),
             "mean_daf_difference": observed_result.mean_daf_difference,
+            "null_polarity_design": null_polarity_design,
+            "polarity_imputation_seed": (
+                args.polarity_imputation_seed if args.asymmetric_polarity_null else ""
+            ),
             "reference_sensitivity_n": sensitivity_n,
             "reference_sensitivity_z_min": (
                 min(sensitivity_z_scores) if sensitivity_z_scores else ""
@@ -1427,23 +1458,10 @@ def calculate(args: argparse.Namespace) -> None:
             "vcf": str(args.vcf.resolve()),
             "vcf_sha256": vcf_sha256,
             "vcf_eligibility_identity": vcf_eligibility_identity,
-            "a_polarity_rule": (
-                "insertion presence is derived after upstream at-least-50%-derived "
-                "retention" if args.a_type == "TE" else
-                (
-                    "coordinate-keyed hard Bernoulli(q) orientation"
-                    if args.asymmetric_polarity_null else
-                    "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
-                )
-            ),
-            "b_polarity_rule": (
-                "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
-            ),
-            "null_left_polarity_rule": (
-                "coordinate-keyed hard Bernoulli(q) orientation"
-                if args.asymmetric_polarity_null else
-                "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
-            ),
+            "a_polarity_rule": a_polarity_rule,
+            "b_polarity_rule": mixture_polarity_rule,
+            "null_left_polarity_rule": null_left_polarity_rule,
+            "null_polarity_design": null_polarity_design,
             "asymmetric_polarity_null": args.asymmetric_polarity_null,
             "polarity_imputation_seed": (
                 args.polarity_imputation_seed if args.asymmetric_polarity_null else None
@@ -1578,10 +1596,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "sites their posterior polarity; A uses it when --a-type SNP",
     )
     parser.add_argument(
-        "--asymmetric-polarity-null", action="store_true",
-        help="experimental known-versus-uncertain polarity calibration: keep B0 "
+        "--asymmetric-polarity-null", action=argparse.BooleanOptionalAction,
+        default=True,
+        help="known-versus-uncertain polarity calibration (default: enabled): keep B0 "
              "as the posterior q-mixture, but hard-polarize each null-left SNP "
-             "with a Bernoulli(q) draw; with -A SNP, hard-polarize A the same way",
+             "with a Bernoulli(q) draw; with -A SNP, hard-polarize A the same way; "
+             "use --no-asymmetric-polarity-null for the legacy mixture-vs-mixture null",
     )
     parser.add_argument(
         "--polarity-imputation-seed", type=int, default=2001,

@@ -51,7 +51,7 @@ from .release_provenance import software_provenance
 
 
 SCHEMA_VERSION = "phi-contrast-v1"
-REQUIRED_RESULT_SCHEMA = "phi-sfs-wasserstein-v1"
+REQUIRED_RESULT_SCHEMA = "phi-sfs-wasserstein-v2"
 DEFAULT_SEED = 1002
 DEFAULT_PAIRING_REPEATS = 100
 _LABEL_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -240,7 +240,7 @@ def benjamini_hochberg(p_values: Sequence[float]) -> np.ndarray:
 
 @dataclass(frozen=True)
 class CategoryResult:
-    """One loaded phi-sfs-wasserstein-v1 result, as needed for a contrast."""
+    """One loaded phi-sfs-wasserstein-v2 result, as needed for a contrast."""
 
     label: str
     directory: Path
@@ -251,6 +251,7 @@ class CategoryResult:
     null_z_scores: np.ndarray
     target_digest: object
     schema_version: str
+    null_polarity_design: str
 
 
 def _json(path: Path) -> dict:
@@ -273,7 +274,7 @@ def _read_summary_z_score(directory: Path) -> float | None:
 
 
 def load_category(label: str, directory: Path) -> CategoryResult:
-    """Load and validate one phi-sfs-wasserstein-v1 result directory."""
+    """Load and validate one phi-sfs-wasserstein-v2 result directory."""
     metadata_path = directory / "metadata.json"
     if not metadata_path.exists():
         raise ValueError(f"{label} ({directory}): no metadata.json found")
@@ -294,6 +295,13 @@ def load_category(label: str, directory: Path) -> CategoryResult:
         raise ValueError(f"{label} ({directory}): metadata a_type must be 'TE' or 'SNP', got {a_type!r}")
     if b_type not in ("SNP",):
         raise ValueError(f"{label} ({directory}): metadata b_type must be 'SNP', got {b_type!r}")
+
+    null_polarity_design = metadata.get("null_polarity_design")
+    if not isinstance(null_polarity_design, str) or not null_polarity_design:
+        raise ValueError(
+            f"{label} ({directory}): metadata null_polarity_design must be a "
+            "non-empty string"
+        )
 
     r = metadata.get("accepted_null_replicates")
     if not isinstance(r, (int, np.integer)) or r < 1:
@@ -337,6 +345,7 @@ def load_category(label: str, directory: Path) -> CategoryResult:
         null_z_scores=null_z,
         target_digest=metadata.get("target_digest"),
         schema_version=schema,
+        null_polarity_design=null_polarity_design,
     )
 
 
@@ -374,6 +383,19 @@ def calculate(args: argparse.Namespace) -> None:
     if len(b_types) != 1:
         detail = ", ".join(f"{c.label}={c.b_type}" for c in categories)
         raise ValueError(f"all --result categories must share one b_type; got {detail}")
+
+    null_polarity_designs = {
+        category.null_polarity_design for category in categories
+    }
+    if len(null_polarity_designs) != 1:
+        detail = ", ".join(
+            f"{category.label}={category.null_polarity_design}"
+            for category in categories
+        )
+        raise ValueError(
+            "all --result categories must share one null_polarity_design; "
+            f"got {detail}"
+        )
 
     # Categories may carry different R (every QC-passing null is used); each
     # pair is contrasted over min(R1, R2) randomly paired replicates.
@@ -489,6 +511,7 @@ def calculate(args: argparse.Namespace) -> None:
             "pairing_repeats": int(args.pairing_repeats),
             "primary_repeat_index": 0,
             "b_type": next(iter(b_types)),
+            "null_polarity_design": next(iter(null_polarity_designs)),
             "accepted_null_replicates": {
                 category.label: category.accepted_null_replicates
                 for category in categories
@@ -527,6 +550,7 @@ def calculate(args: argparse.Namespace) -> None:
                     "accepted_null_replicates": category.accepted_null_replicates,
                     "z_score": category.z_score,
                     "target_digest": category.target_digest,
+                    "null_polarity_design": category.null_polarity_design,
                 }
                 for category in categories
             ],
@@ -544,7 +568,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--result", action="append", required=True, metavar="LABEL=DIR",
-        help="a phi-sfs-wasserstein-v1 result directory as LABEL=DIR; repeat for "
+        help="a phi-sfs-wasserstein-v2 result directory as LABEL=DIR; repeat for "
              "each category (at least two required)",
     )
     parser.add_argument("--output", type=Path, required=True,

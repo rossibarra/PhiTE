@@ -381,6 +381,7 @@ python -m normalize_tes.phi_sfs \
   -A "$A_TYPE" \
   -B "$B_TYPE" \
   --reference-seed 1002 \
+  --polarity-imputation-seed 2001 \
   --min-null-replicates 900 \
   --output "$PHI"
 ```
@@ -397,6 +398,8 @@ python -m normalize_tes.phi_sfs \
 | `--reference-replicate` | optional explicit $B_0$ replicate ID, overriding the draw |
 | `--min-null-replicates` | floor on $R$: every QC-passing non-reference set is a null, and the run fails if fewer than this pass; default 900 |
 | `--reference-sensitivity` | optionally repeat calibration with $N$ alternative references, the next $N$ sets of the same seeded permutation; default 0 |
+| `--asymmetric-polarity-null`, `--no-asymmetric-polarity-null` | use the Bernoulli-$q$ asymmetric calibration described below; enabled by default. The negative form reproduces the legacy mixture-versus-mixture null and is retained only for comparison |
+| `--polarity-imputation-seed` | seed for reproducible, coordinate-keyed Bernoulli-$q$ hard orientations; default 2001 |
 | `--output` | new Phi-SFS result directory |
 
 The default rejects heterozygous calls. Use `--heterozygous missing` only when the
@@ -415,6 +418,13 @@ primary $B_0$ can become a null in that rerun) and publishes
 `right_max_control_reuse`, each set's largest global control-reuse count from the
 match bundle's `reuse_row_indices.npy`/`reuse_counts.npy` (empty for A; all 1 in a
 valid disjoint bundle).
+
+With the default asymmetric design enabled, PhiTE additionally writes
+`b_bernoulli_q_raw_sfs.npy`, `b_bernoulli_q_normalized_sfs.npy`, and
+`b_bernoulli_q_cdf.npy`. `metadata.json` records `null_polarity_design`,
+`asymmetric_polarity_null`, `polarity_imputation_seed`,
+`polarity_imputation_algorithm`, and the separate A, B-reference, and null-left
+polarity rules.
 
 #### Wasserstein definition
 
@@ -443,10 +453,25 @@ an excess of rare or high-frequency derived alleles.
 
 ![Schematic definition of Phi-SFS as the area between focal and neutral SFS cumulative distribution functions](figures/phi_sfs_definition_schematic.png)
 
-Polarity is type-specific. A retained TE treats insertion presence as derived; the
-upstream TE filter retains at least 50% posterior support, including exactly 50%. For
-every SNP in A or B, if the observed ALT frequency is $p$ and the fraction of usable
-ARG draws in which ALT is derived is $q$, its projected contribution is
+#### Polarity and the asymmetric null
+
+Polarity is type-specific because the two variant classes contain different prior
+information. For a TE, insertion presence is known biologically to have originated
+as the derived state. The upstream at-least-50% filter does not infer which TE allele
+was originally derived; it removes presence/absence patterns inconsistent with a
+well-supported single insertion, including patterns potentially affected by
+subsequent deletion, recurrent movement, or other homoplasy. A retained TE therefore
+contributes a hard insertion-derived spectrum.
+
+SNPs do not have an equivalent known derived allele. For each SNP, let $p$ be the
+observed ALT frequency and let
+
+$$
+q=P(\mathrm{ALT\ is\ derived}\mid\mathrm{usable\ ARG\ draws})
+$$
+
+be the fraction of usable ARG draws in which ALT is derived. The mixture-polarized
+SNP contribution is
 
 $$
 q\,h(k,n)+(1-q)\,h(n-k,n).
@@ -455,6 +480,45 @@ $$
 All $q\in[0,1]$ are retained: there is no SNP `q > 0.5` filter. ARG draws that cannot
 orient either observed allele are reported as unusable rather than counted toward
 either direction.
+
+The production calibration is asymmetric because the observed TE comparison is
+itself asymmetric:
+
+$$
+D_{\mathrm{obs}}
+=\Phi_{\mathrm{SFS}}(A_{\mathrm{TE,hard}},B_{0,\mathrm{mixture}}).
+$$
+
+For every non-reference control set $B_i$, PhiTE constructs a hard SNP spectrum by
+drawing one orientation per SNP from $\operatorname{Bernoulli}(q)$. ALT is declared
+derived when a reproducible coordinate-keyed uniform variate is less than $q$;
+otherwise REF is declared derived. The null distances are
+
+$$
+D_i^0
+=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{Bernoulli}(q)\ hard},
+                     B_{0,\mathrm{mixture}}).
+$$
+
+This null reproduces the hard-versus-uncertain polarity architecture of the observed
+comparison. It does not claim that SNP polarity is known. Instead, each hard
+orientation is one posterior imputation of the unknown SNP state. Its expected
+projected contribution is the original SNP mixture:
+
+$$
+E[h(\mathrm{DAF})]=q\,h(k,n)+(1-q)\,h(n-k,n).
+$$
+
+The imputation is keyed by the polarity seed, chromosome, and position using
+`sha256(phi-sfs-bernoulli-q-v1, seed, chromosome, position)`. It is therefore
+reproducible and assigns a SNP the same orientation wherever that coordinate is used.
+For `-A SNP`, focal $A$ receives the same Bernoulli-$q$ hard treatment; this is the
+SNP negative-control design used to estimate type-I behavior.
+
+The legacy `--no-asymmetric-polarity-null` mode instead compares mixture-polarized
+$B_i$ with mixture-polarized $B_0$. It does not reproduce the observed
+hard-versus-mixture polarity architecture and is not the intended production
+analysis.
 
 #### Null calibration, Z-scores, and P-values
 
@@ -467,11 +531,15 @@ sampling floor separately for every focal category rather than comparing raw
    $R+1$ sets identically: each independently bootstraps the observed A-site ages and
    matches exactly $M$ SNPs to that bootstrap age CDF. All sets use the shared samples,
    callability, and data-quality rules, with the type-specific polarity rules above.
-2. Calculate the observed distance
-   $D_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A,B_0)$.
-3. Calculate the finite-sample null distances
-   $D_i^0=\Phi_{\mathrm{SFS}}(B_i,B_0)$, for $i=1,\ldots,R$. Here
-   $D_i^0$ is a raw Φ-SFS distance between two neutral SNP sets, not a Z-score.
+2. Keep $B_0$ mixture-polarized and calculate the observed distance
+   $D_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A_{\mathrm{hard}},
+   B_{0,\mathrm{mixture}})$.
+3. Hard-orient each non-reference $B_i$ with one coordinate-keyed
+   Bernoulli-$q$ draw per SNP and calculate
+   $D_i^0=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{Bernoulli}(q)\ hard},
+   B_{0,\mathrm{mixture}})$, for $i=1,\ldots,R$. Here $D_i^0$ is a raw
+   Φ-SFS distance between two neutral SNP sets under the asymmetric polarity
+   design, not a Z-score.
 4. Let $μ_0$ and $s_0$ be the mean and sample standard deviation of the
    $D_i^0$. Report the null-standardized effect size
 
@@ -486,7 +554,8 @@ sampling floor separately for every focal category rather than comparing raw
    \mathbf{1}\!\left(D_i^0\ge D_{\mathrm{obs}}\right)}{R+1}.
    $$
 
-The matcher publishes 1001 disjoint sets. Phi-SFS draws $B_0$ uniformly from the
+The matcher publishes 1001 disjoint sets. Phi-SFS draws the mixture-polarized $B_0$
+uniformly from the
 sets that pass matching QC, with a seed derived from `--reference-seed` and the
 target digest, and uses every other QC-passing set as a null, so $R$ is whatever
 passes QC and may differ between categories. A floor fixed before the run
@@ -514,6 +583,24 @@ Z-score describes the magnitude of that departure in category-specific null stan
 deviations. Neither identifies the direction of the SFS shift; retain the CDFs and
 signed bin residuals for that purpose.
 
+#### SNP type-I pilot
+
+A preliminary empirical negative control treated 100 held-out real SNP sets as
+Bernoulli-$q$-hard focal sets and compared each with a mixture-polarized SNP
+reference using 344 Bernoulli-$q$-hard SNP null sets. Each set contained 4,023
+sites. Seven of 100 tests rejected at $\alpha=0.05$, for an observed rejection
+fraction of 0.07 and a descriptive Wilson 95% interval of 0.034--0.137.
+
+This pilot is encouraging for the polarity construction but is not final pipeline
+validation. All 100 tests shared one reference and one empirical null vector, so the
+P-values are dependent. The sets came from an interrupted, unpublished matcher work
+prefix, and none passed the production matching-error-ratio threshold: the median
+ratio was 2.86 and 0/445 completed sets were below 0.5. The result must therefore be
+reported as a preliminary SNP negative control, not evidence that the complete
+matching-and-polarity pipeline has a precisely estimated 7% type-I error rate. Its
+machine-readable provenance is in
+`results/phi_sfs/snp_type1_asymmetric_100/summary.json`.
+
 For a formal contrast between categories 1 and 2, use
 $\Delta_{\mathrm{obs}}=Z_{A_1}-Z_{A_2}$, construct paired null contrasts
 $\Delta_i^0=Z_{1i}^0-Z_{2i}^0$, and compare
@@ -524,7 +611,7 @@ The focal A set is observed once and remains fixed. Small or unusual focal sets 
 therefore yield unstable results even after null calibration. Always report $M$,
 the raw distance, null mean and standard deviation, Z-score, Monte Carlo P-value,
 replicate count, and matching diagnostics. Results use the
-`phi-sfs-wasserstein-v1` schema and cannot be silently combined with older Phi-SFS
+`phi-sfs-wasserstein-v2` schema and cannot be silently combined with older Phi-SFS
 outputs. The implementation design is recorded in
 [PHI_SFS_WASSERSTEIN_CODING_PLAN.md](docs/PHI_SFS_WASSERSTEIN_CODING_PLAN.md).
 
@@ -579,7 +666,10 @@ ANCESTRAL="$ANCESTRAL",OUTPUT="$PHI",A_TYPE="$A_TYPE",B_TYPE=SNP \
 ```
 
 This runs either TE-versus-SNP or SNP-versus-SNP according to `A_TYPE`; `B_TYPE`
-is currently constrained to `SNP`, matching the command-line interface.
+is currently constrained to `SNP`, matching the command-line interface. The launcher
+defaults to `ASYMMETRIC_POLARITY_NULL=true` and
+`POLARITY_IMPUTATION_SEED=2001`. Set `ASYMMETRIC_POLARITY_NULL=false` only to
+reproduce the legacy symmetric-mixture analysis.
 
 Scheduler allocations, measured resource use, scratch sizing, and parameter evidence
 are recorded in [BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
@@ -667,9 +757,10 @@ Before accepting the results:
 4. Confirm the matcher published 1001 identically generated sets in disjoint mode,
    maximum control reuse is one, every overlap with $B_0$ is zero, and all sets used
    in Phi-SFS pass matching QC.
-5. Confirm the `phi-sfs-wasserstein-v1` result records the intended A/B types, exactly
-   equal site count $M$, reference replicate, null count, raw distance, null mean and
-   sample SD, Z-score, exceedances, and add-one P-value.
+5. Confirm the `phi-sfs-wasserstein-v2` result records the intended A/B types,
+   `null_polarity_design=bernoulli-q-hard-vs-posterior-mixture`, polarity-imputation
+   seed and algorithm, exactly equal site count $M$, reference replicate, null count,
+   raw distance, null mean and sample SD, Z-score, exceedances, and add-one P-value.
 
 The exact acceptance criteria and the tests supporting them are in
 [BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
@@ -689,10 +780,12 @@ The exact acceptance criteria and the tests supporting them are in
 | `phi_sfs/CATEGORY/` | A/B spectra and CDFs, Wasserstein distances, null Z-scores, summary tables, and provenance |
 
 Outputs are published atomically and are never overwritten. The Phi-SFS output schema
-is `phi-sfs-wasserstein-v1`; its generic `a_*` and `b_*` arrays support both TE-SNP
-and SNP-SNP analyses. Matched-control sets are Monte Carlo null replicates, not
-independent biological samples; see the validation report for the correct
-interpretation of their spread.
+is `phi-sfs-wasserstein-v2`; its generic `a_*` and `b_*` arrays support both TE-SNP
+and SNP-SNP analyses, and its Bernoulli-$q$ arrays record the hard null-left spectra.
+Version 1 used the legacy symmetric-mixture null and must not be silently combined
+with version 2. Matched-control sets are Monte Carlo null replicates, not independent
+biological samples; see the validation report for the correct interpretation of
+their spread.
 
 ## Methods and validation
 

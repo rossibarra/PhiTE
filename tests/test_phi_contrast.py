@@ -170,6 +170,7 @@ def _write_result(
     target_digest: str = "deadbeef",
     complete: bool = True,
     schema_version: str = REQUIRED_RESULT_SCHEMA,
+    null_polarity_design: str = "bernoulli-q-hard-vs-posterior-mixture",
     write_summary: bool = True,
 ) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
@@ -183,6 +184,7 @@ def _write_result(
         "accepted_null_replicates": r,
         "z_score": z_score,
         "target_digest": target_digest,
+        "null_polarity_design": null_polarity_design,
     }
     (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     if write_summary:
@@ -216,6 +218,17 @@ def test_load_category_rejects_incomplete(tmp_path):
         tmp_path / "cat", z_score=1.0, null_z_scores=_rng_null(1, 5), complete=False,
     )
     with pytest.raises(ValueError, match="not marked complete"):
+        load_category("cat", directory)
+
+
+def test_load_category_requires_null_polarity_design(tmp_path):
+    directory = _write_result(
+        tmp_path / "cat", z_score=1.0, null_z_scores=_rng_null(1, 5),
+    )
+    metadata = json.loads((directory / "metadata.json").read_text())
+    del metadata["null_polarity_design"]
+    (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="null_polarity_design"):
         load_category("cat", directory)
 
 
@@ -270,6 +283,9 @@ def test_cli_end_to_end_writes_expected_outputs(tmp_path):
     assert metadata["schema_version"] == SCHEMA_VERSION
     assert metadata["complete"] is True
     assert metadata["accepted_null_replicates"] == {"A": 20, "B": 20}
+    assert metadata["null_polarity_design"] == (
+        "bernoulli-q-hard-vs-posterior-mixture"
+    )
     assert metadata["pairing_repeats"] == 10
     assert len(metadata["inputs"]) == 2
 
@@ -330,6 +346,21 @@ def test_cli_rejects_incomplete_result(tmp_path):
     output = tmp_path / "out"
     argv = ["--result", f"A={a_dir}", "--result", f"B={b_dir}", "--output", str(output)]
     with pytest.raises(ValueError, match="not marked complete"):
+        main(argv)
+    assert not output.exists()
+
+
+def test_cli_rejects_mixed_null_polarity_designs(tmp_path):
+    a_dir = _write_result(
+        tmp_path / "A", z_score=1.0, null_z_scores=_rng_null(1, 10),
+    )
+    b_dir = _write_result(
+        tmp_path / "B", z_score=1.0, null_z_scores=_rng_null(2, 10),
+        null_polarity_design="posterior-mixture-vs-posterior-mixture",
+    )
+    output = tmp_path / "out"
+    argv = ["--result", f"A={a_dir}", "--result", f"B={b_dir}", "--output", str(output)]
+    with pytest.raises(ValueError, match="share one null_polarity_design"):
         main(argv)
     assert not output.exists()
 

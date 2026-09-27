@@ -10,7 +10,7 @@
 #SBATCH --output=phi-contrast-%j.out
 #SBATCH --error=phi-contrast-%j.err
 
-# Formal contrast between two or more already-published phi-sfs-wasserstein-v1
+# Formal contrast between two or more already-published phi-sfs-wasserstein-v2
 # result directories (see normalize_tes/phi_contrast.py and
 # PHI_SFS_WASSERSTEIN_CODING_PLAN.md section 8). This only reads each
 # category's metadata, summary.csv, and null_z_scores.npy -- no VCF scan, no
