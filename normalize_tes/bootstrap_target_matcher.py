@@ -309,6 +309,55 @@ def stratified_initial_set(
     return np.sort(out)
 
 
+def mass_initial_set(
+    store: object, boundary_ages: np.ndarray, target_mass: np.ndarray,
+    n_target: int, candidates: np.ndarray, rng: np.random.Generator, *,
+    oversample: int = 20, block_rows: int = 4096,
+) -> np.ndarray:
+    """Draw an initial set whose summed stratum age mass tracks the target's.
+
+    The alternative to `stratified_initial_set`: instead of filling median-age
+    quotas, each pool row's age mass across the strata (`stratum_mass` per
+    row) is compared with the mass the set still lacks, and rows are added
+    greedily, each time taking the one that most reduces the squared residual
+    `|remaining - m_i|^2`. A row with a diffuse age thus counts towards every
+    stratum it overlaps, as it does in the matcher's CDF objective.
+    """
+    pool = rng.choice(candidates, size=min(candidates.size, n_target * oversample),
+                      replace=False)
+    if pool.size < n_target:
+        raise ValueError(
+            f"mass initialisation drew {pool.size:,} of {n_target:,} rows; "
+            "raise --init-oversample or widen the candidate pool"
+        )
+    cdf = row_cdfs(store, pool, np.asarray(boundary_ages, dtype=np.float64),
+                   block_rows=block_rows, dtype=np.dtype("float64"))
+    if not np.all(np.isfinite(cdf)):
+        raise ValueError("mass initialisation requires a finite CDF for every row")
+    cdf[:, 0] = 0.0
+    cdf[:, -1] = 1.0
+    mass = np.diff(cdf, axis=1)
+    norm = np.einsum("ij,ij->i", mass, mass)
+    remaining = np.asarray(target_mass, dtype=np.float64).copy()
+    available = np.ones(pool.size, dtype=bool)
+    chosen = np.empty(n_target, dtype=np.int64)
+    for step in range(n_target):
+        gain = 2.0 * (mass @ remaining) - norm
+        gain[~available] = -np.inf
+        pick = int(np.argmax(gain))
+        chosen[step] = pick
+        available[pick] = False
+        remaining -= mass[pick]
+    return np.sort(pool[chosen])
+
+
+def random_initial_set(
+    n_target: int, candidates: np.ndarray, rng: np.random.Generator,
+) -> np.ndarray:
+    """Draw an initial set uniformly from the candidates, ignoring age."""
+    return np.sort(rng.choice(candidates, size=n_target, replace=False))
+
+
 def optimize_restart(
     store: object,
     candidates: np.ndarray,
@@ -861,6 +910,7 @@ def _write_outputs(
     stratum_counts: np.ndarray | None = None,
     stratum_target_mass: np.ndarray | None = None,
     stratum_capacity: np.ndarray | None = None,
+    init_mode: str = "median",
 ) -> None:
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
@@ -1081,6 +1131,7 @@ def _write_outputs(
             "maximum_control_reuse": int(reuse.max()),
             "vcf_eligibility_identity": eligibility_identity,
             "stratum_quotas": [int(q) for q in stratum_quotas],
+            "init_mode": init_mode,
             # Candidate and target age mass per stratum, and their ratio,
             # measured before any replicate ran; null outside disjoint mode,
             # where no preflight is needed, and for strata with no target mass.
@@ -1178,6 +1229,11 @@ def run(args: argparse.Namespace) -> None:
         check_disjoint_stratum_capacity(
             stratum_counts, stratum_target_mass, stratum_capacity,
             config.replicates)
+    init_target_mass = None
+    if args.init_mode == "mass":
+        init_target_mass = (
+            stratum_target_mass if stratum_target_mass is not None
+            else stratum_mass(store, target_rows, boundary_ages))
     points = analysis_points(age_bins)
     exact_step = float(age_bins[1] - age_bins[0])
     if config.search_bin_width < exact_step:
@@ -1339,11 +1395,21 @@ def run(args: argparse.Namespace) -> None:
                 # replicate's own candidate universe, which in disjoint mode
                 # already excludes every row an earlier replicate published, so
                 # the starting state is legal by construction.
-                initial = stratified_initial_set(
-                    store, boundary_ages, quotas, replicate_candidates,
-                    np.random.default_rng(restart_seed),
-                    oversample=args.init_oversample,
-                )
+                init_rng = np.random.default_rng(restart_seed)
+                if args.init_mode == "mass":
+                    initial = mass_initial_set(
+                        store, boundary_ages, init_target_mass,
+                        target_rows.size, replicate_candidates, init_rng,
+                        oversample=args.init_oversample,
+                    )
+                elif args.init_mode == "random":
+                    initial = random_initial_set(
+                        target_rows.size, replicate_candidates, init_rng)
+                else:
+                    initial = stratified_initial_set(
+                        store, boundary_ages, quotas, replicate_candidates,
+                        init_rng, oversample=args.init_oversample,
+                    )
                 result = optimize_restart(
                     store, replicate_candidates, initial,
                     bootstrap_targets[replicate], observed_target, age_bins,
@@ -1418,6 +1484,7 @@ def run(args: argparse.Namespace) -> None:
         stratum_counts=stratum_counts,
         stratum_target_mass=stratum_target_mass,
         stratum_capacity=stratum_capacity,
+        init_mode=args.init_mode,
     )
     if not args.keep_work:
         shutil.rmtree(work_dir)
@@ -1438,6 +1505,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="candidates drawn per required site when filling the "
                              "initial age strata. Larger fills the strata better "
                              "and costs one narrow store read per candidate")
+    parser.add_argument("--init-mode", choices=("median", "mass", "random"),
+                        default="median",
+                        help="how each restart's initial set is drawn: fill the "
+                             "median-age stratum quotas (default), greedily match "
+                             "the target's per-stratum age mass, or draw uniformly "
+                             "at random ignoring age")
     candidates = parser.add_mutually_exclusive_group(required=True)
     candidates.add_argument("--candidate-rows", type=Path,
                             help="control universe from normalize_tes.build_candidate_rows, "

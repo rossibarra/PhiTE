@@ -42,6 +42,7 @@
 #   REPLICATES       control sets to publish                   (default: 1001)
 #   RESTARTS         stratified restarts per replicate            (default: 3)
 #   SEED             global seed                                (default: 1002)
+#   INIT_MODE        median|mass|random initial set per restart (default: median)
 #   A_TYPE           TE|SNP for the focal target                         (TE)
 #   A_POSITIONS      build TARGET from this position file if TARGET is absent
 #   VCF_ELIGIBILITY  shared authenticated callability/orientation artifact [required]
@@ -84,6 +85,7 @@ WORK_DIR="${WORK_DIR:-${OUTPUT}.work}"
 REPLICATES="${REPLICATES:-1001}"
 RESTARTS="${RESTARTS:-3}"
 SEED="${SEED:-1002}"
+INIT_MODE="${INIT_MODE:-median}"
 A_TYPE="${A_TYPE:-TE}"
 A_POSITIONS="${A_POSITIONS:-${TE_POSITIONS:-}}"
 ACCEPTANCE_QUANTILE="${ACCEPTANCE_QUANTILE:-0.50}"
@@ -310,6 +312,7 @@ python -m normalize_tes.bootstrap_target_matcher \
     --resume \
     --replicates "$REPLICATES" \
     --restarts "$RESTARTS" \
+    --init-mode "$INIT_MODE" \
     --disjoint-replicates \
     --seed "$SEED"
 date

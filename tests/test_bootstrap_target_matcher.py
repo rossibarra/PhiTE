@@ -15,7 +15,9 @@ from normalize_tes.bootstrap_target_matcher import (
     disjoint_stratum_capacity,
     log_search_grid,
     main,
+    mass_initial_set,
     median_age_strata,
+    random_initial_set,
     stratum_mass,
     optimize_restart,
     parse_args,
@@ -190,6 +192,25 @@ def test_median_age_strata_is_shared_and_chunk_invariant(tmp_path):
     )
     np.testing.assert_array_equal(strata, [1] * 6 + [2] * 6)
     np.testing.assert_array_equal(quotas, [0, 1, 1, 0])
+
+
+def test_mass_initial_set_matches_target_mass(tmp_path):
+    """One young and one old target: the greedy draw takes one of each."""
+    store_path = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 6 + [_OLD] * 6)
+    target = _target(tmp_path / "target", store_path)
+    store = open_snp_age_store(store_path)
+    boundaries = np.load(target / "interval_boundary_ages.npy")
+    candidates = np.arange(2, 14)
+    target_mass = stratum_mass(store, np.array([0, 1]), boundaries)
+    initial = mass_initial_set(store, boundaries, target_mass, 2, candidates,
+                               np.random.default_rng(0), oversample=6)
+    assert initial.size == 2
+    assert np.sum(initial < 8) == 1 and np.sum(initial >= 8) == 1
+    rand = random_initial_set(2, candidates, np.random.default_rng(0))
+    assert rand.size == 2 and np.unique(rand).size == 2
+    assert np.isin(rand, candidates).all()
+    assert parse_args(["--store", "s", "--target", "t", "--output", "o",
+                       "--all-eligible", "--init-mode", "mass"]).init_mode == "mass"
 
 
 def test_capacity_is_measured_in_age_mass_on_both_sides(tmp_path):
