@@ -513,6 +513,8 @@ $$
 The imputation is keyed by the polarity seed, chromosome, and position using
 `sha256(phi-sfs-bernoulli-q-v1, seed, chromosome, position)`. It is therefore
 reproducible and assigns a SNP the same orientation wherever that coordinate is used.
+Production results therefore condition on a single `--polarity-imputation-seed`;
+their sensitivity across seeds is not yet reported.
 For `-A SNP`, focal $A$ receives the same Bernoulli-$q$ hard treatment; this is the
 SNP negative-control design used to estimate type-I behavior.
 
@@ -532,8 +534,12 @@ sampling floor separately for every focal category rather than comparing raw
    $R+1$ sets by the same procedure: each independently bootstraps the observed
    A-site ages and matches exactly $M$ SNPs to that bootstrap age CDF. Because
    disjoint matching draws later sets from a depleted pool, the sets are not
-   identically distributed; drawing $B_0$ at random (below) is what makes it
-   exchangeable with the nulls. All sets use the shared samples,
+   identically distributed. Drawing $B_0$ at random (below) makes the choice of
+   reference uniform and SFS-blind among the accepted sets. It does not make the
+   depleted sets identically distributed, and it does not show that the
+   $A$-versus-$B_0$ comparison is exchangeable with the $B_i$-versus-$B_0$
+   comparisons; that remains an open validation item
+   ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 7). All sets use the shared samples,
    callability, and data-quality rules, with the type-specific polarity rules above.
 2. Keep $B_0$ mixture-polarized and calculate the observed distance
    $\Phi_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A_{\mathrm{hard}},
@@ -545,7 +551,7 @@ sampling floor separately for every focal category rather than comparing raw
    Φ-SFS distance between two neutral SNP sets under the asymmetric polarity
    design, not a Z-score.
 4. Let $μ_0$ and $s_0$ be the mean and sample standard deviation of the
-   $\Phi_i^0$. Report the null-standardized effect size
+   $\Phi_i^0$. Report the standardized test statistic
 
    $$
    Z_A=\frac{\Phi_{\mathrm{obs}}-\mu_0}{s_0}.
@@ -570,23 +576,29 @@ age-matching QC is not guaranteed to be neutral with respect to the resulting SF
 This is an inherent limitation of the selection scheme and should be considered when
 interpreting calibrated results. All published sets must be globally disjoint.
 Thus every control SNP has maximum reuse one and every $B_i$ has zero overlap with
-$B_0$. $B_0$ is drawn before any SFS is examined, so it is exchangeable with the
-other QC-passing sets. Replicate 0 is no longer the default $B_0$, because it is
+$B_0$. $B_0$ is drawn before any SFS is examined, so the choice of reference is
+SFS-blind; this does not by itself make the matched sets exchangeable (finding 7 of
+[review 12](docs/CODE_REVIEW_ROUND12.md)). Replicate 0 is no longer the default $B_0$, because it is
 matched first, from the undepleted pool, and so is not a typical set; it can still
-be drawn as $B_0$ or used as a null like any other QC-passing set. $B_0$ differs from the
-other sets only in being held fixed in the distance calculations.
+be drawn as $B_0$ or used as a null like any other QC-passing set. Within the
+calculation, $B_0$ differs from the other sets in being held fixed as the reference.
 
 With $R$ near 1000 the minimum attainable P-value is about $1/(R+1)\approx10^{-3}$. Plot one equal-size point per focal category at
 $Z_A$, color it by $-\log_{10}P_A$, and show its category-specific null Z-score
 distribution in gray. Cap the displayed color scale at $\log_{10}(R+1)$, about 3.
+Because $Z_A$ grows with $M$, this plot shows test strength, not effect size; do not
+compare $Z_A$ across categories of different $M$ as an effect size.
 
-![Illustrative category-specific null distributions, standardized Phi-SFS effects, and P-value colors](figures/phi_sfs_null_standardization_example.png)
+![Illustrative category-specific null distributions, standardized Phi-SFS test statistics, and P-value colors](figures/phi_sfs_null_standardization_example.png)
 
 The P-value tests whether a focal spectrum is farther from its matched neutral
 background than expected from two finite neutral samples of the same size. The
-Z-score describes the magnitude of that departure in category-specific null standard
-deviations. Neither identifies the direction of the SFS shift; retain the CDFs and
-signed bin residuals for that purpose.
+Z-score is a standardized test statistic: it expresses that departure in
+category-specific null standard deviations, and because $s_0$ is expected to shrink
+as $M$ grows, it grows with $M$ for a fixed spectral difference. It is not a
+magnitude: report $\Phi_{\mathrm{obs}}-\mu_0$ (in DAF units), the signed CDF and bin
+residuals, and $M$ as the magnitude of a departure. Neither Z nor P identifies the direction of the SFS
+shift; the CDFs and signed bin residuals do.
 
 #### SNP type-I pilot
 
@@ -606,10 +618,25 @@ matching-and-polarity pipeline has a precisely estimated 7% type-I error rate. I
 machine-readable provenance is in
 `results/phi_sfs/snp_type1_asymmetric_100/summary.json`.
 
-For a formal contrast between categories 1 and 2, use
-$\Delta_{\mathrm{obs}}=Z_{A_1}-Z_{A_2}$, construct paired null contrasts
-$\Delta_i^0=Z_{1i}^0-Z_{2i}^0$, and compare
-$|\Delta_{\mathrm{obs}}|$ with the distribution of $|\Delta_i^0|$. A visual difference
+The pilot's focal sets and nulls share the same Bernoulli-$q$ construction, so it
+tests the SNP path only. It cannot validate TE hard polarity, the TE polarity filter,
+or the agreeing-draw TE ages ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 2).
+
+For a formal contrast between categories 1 and 2, `normalize_tes.phi_contrast` uses
+$\Delta_{\mathrm{obs}}=Z_{A_1}-Z_{A_2}$. Because the two categories' null sets share
+no replicate identity, it pairs their standardized null Z-scores by random
+permutation: with $R=\min(R_1,R_2)$, it takes $R$ entries of category 1's null
+vector in random order ($\pi$) and pairs them with $R$ entries of category 2's
+($\sigma$, a random subset when $R_2>R$), so
+$\Delta_i^0=Z_{1,\pi(i)}^0-Z_{2,\sigma(i)}^0$ for $i=1,\ldots,R$. It reports the
+two-sided add-one P-value
+$\bigl(1+\#\{i:|\Delta_i^0|\ge|\Delta_{\mathrm{obs}}|\}\bigr)/(R+1)$.
+The pairing is seeded from `--seed` and the two category labels; repeat 0 is the
+reported result, and `--pairing-repeats` independent pairings give a P-value
+sensitivity range. This treats the two categories as independent. It ignores any
+covariance between nested or overlapping categories (for example, in-gene TEs
+versus all TEs), which share focal sites, so for them the contrast is not known to
+be calibrated ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 5). A visual difference
 between two points is not by itself a formal between-category test.
 
 The focal A set is observed once and remains fixed. Small or unusual focal sets can
@@ -803,8 +830,9 @@ their spread.
 - [BOOTSTRAP_DISCARDED_APPROACHES.md](docs/BOOTSTRAP_DISCARDED_APPROACHES.md) — evaluated
   approaches that are not part of the production route.
 - [CHANGELOG.md](docs/CHANGELOG.md) — release-level behavior changes.
-- [CODE_REVIEW_ROUND12.md](docs/CODE_REVIEW_ROUND12.md) — latest review: statistical
-  design of the Phi-SFS calibration and the matching-QC blocker.
+- [CODE_REVIEW_ROUND12.md](docs/CODE_REVIEW_ROUND12.md) — latest review (Claude and
+  Codex): statistical design of the Phi-SFS calibration, the matching-QC blocker, and
+  the proposed simulation validation study.
 
 Historical `INTERVAL_STORE_*`, `GLOBAL_QUANTILE_*`, sampler plans, and older code
 reviews document development history; they are not operator instructions.

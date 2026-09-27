@@ -855,7 +855,9 @@ def calculate(args: argparse.Namespace) -> None:
     # --reference-seed and the target digest, unless --reference-replicate
     # names it. Replicate 0 is matched first, from the undepleted pool, so it
     # is not a typical set; a seeded draw keeps the choice prespecified,
-    # reproducible and SFS-blind while making B0 exchangeable with the rest.
+    # reproducible and SFS-blind. That makes the choice of reference uniform
+    # among accepted sets; it does not by itself make sequentially matched
+    # sets exchangeable (CODE_REVIEW_ROUND12.md, finding 7).
     # The same permutation supplies the alternative references for
     # reference sensitivity, so they are prespecified in the same way.
     reference_seed = int.from_bytes(hashlib.sha256(
@@ -1205,7 +1207,7 @@ def calculate(args: argparse.Namespace) -> None:
     )
 
     # Reference sensitivity: rerun the same phi_sfs/calibrate_phi pair once
-    # per alternative B0, each with its own independently selected null set
+    # per alternative B0, each using every other QC-passing set as its nulls
     # (see the selection above), reading out of the same shared scan.
     sensitivity_reference_ids: list[int] = []
     sensitivity_observed_phi_sfs: list[float] = []
