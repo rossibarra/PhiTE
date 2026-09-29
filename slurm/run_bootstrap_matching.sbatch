@@ -49,8 +49,10 @@
 #   ACCEPTANCE_QUANTILE        bootstrap quantile for the target threshold (0.50)
 #   MISSING_POSITION_POLICY    error|drop for target construction     (error)
 #   SCRATCH_HEADROOM_GB        scratch reserved for the target CDF      (32)
-#   TE_POLARITY_MASK           polarity mask dir, when building a target (unset)
-#   MAX_FLIPPED_FRACTION       discard TEs flipped above this fraction   (0.5)
+#
+# TE targets are built from all ARG draws with no polarity filter, like SNP
+# targets: Phi-SFS polarizes TEs by the ARG posterior, as it does SNPs. The
+# matcher refuses a target built with --te-polarity-mask.
 #
 # Example:
 #
@@ -90,8 +92,6 @@ A_TYPE="${A_TYPE:-TE}"
 A_POSITIONS="${A_POSITIONS:-${TE_POSITIONS:-}}"
 ACCEPTANCE_QUANTILE="${ACCEPTANCE_QUANTILE:-0.50}"
 MISSING_POSITION_POLICY="${MISSING_POSITION_POLICY:-error}"
-TE_POLARITY_MASK="${TE_POLARITY_MASK:-}"
-MAX_FLIPPED_FRACTION="${MAX_FLIPPED_FRACTION:-0.5}"
 CANDIDATE_REPORT="${CANDIDATE_REPORT:-${CANDIDATE_ROWS}.json}"
 
 if [[ "$A_TYPE" != "TE" && "$A_TYPE" != "SNP" ]]; then
@@ -102,16 +102,10 @@ if [[ "$CANDIDATE_ROWS" == "all" ]]; then
     echo "CANDIDATE_ROWS=all is incompatible with shared SNP eligibility; build the candidate .npy first" >&2
     exit 5
 fi
-if [[ "$A_TYPE" == "TE" && -z "$TE_POLARITY_MASK" ]]; then
-    echo "A_TYPE=TE requires TE_POLARITY_MASK for the inclusive >=50% derived rule" >&2
+if [[ -n "${TE_POLARITY_MASK:-}" || -n "${MAX_FLIPPED_FRACTION:-}" ]]; then
+    echo "TE_POLARITY_MASK and MAX_FLIPPED_FRACTION are no longer supported: TEs are" >&2
+    echo "polarized by the ARG posterior like SNPs, with no polarity filter" >&2
     exit 5
-fi
-if [[ "$A_TYPE" == "SNP" && -n "$TE_POLARITY_MASK" ]]; then
-    echo "A_TYPE=SNP must not use TE_POLARITY_MASK" >&2
-    exit 5
-fi
-if [[ "$A_TYPE" == "SNP" ]]; then
-    MAX_FLIPPED_FRACTION=""
 fi
 
 cd "$PROJECT"
@@ -197,20 +191,6 @@ echo "staging $STORE to $TMPDIR/interval_store"; date
 rsync -a --delete "$STORE/" "$TMPDIR/interval_store/"
 date
 
-# A draw that mis-polarized a TE placed its mutation on a different branch, so
-# the age it recorded belongs to a different event. With a mask, each TE's age
-# CDF is built from its agreeing draws only.
-polarity_option=()
-if [[ "$A_TYPE" == "TE" ]]; then
-    polarity_option+=(--te-polarity-mask "$TE_POLARITY_MASK")
-    if [[ -n "$MAX_FLIPPED_FRACTION" ]]; then
-        polarity_option+=(--max-flipped-fraction "$MAX_FLIPPED_FRACTION")
-    fi
-elif [[ -n "$MAX_FLIPPED_FRACTION" ]]; then
-    echo "MAX_FLIPPED_FRACTION requires TE_POLARITY_MASK" >&2
-    exit 5
-fi
-
 if [[ ! -d "$TARGET" ]]; then
     if [[ -z "$A_POSITIONS" ]]; then
         echo "TARGET $TARGET does not exist and A_POSITIONS is unset" >&2
@@ -228,25 +208,16 @@ if [[ ! -d "$TARGET" ]]; then
         --acceptance-quantile "$ACCEPTANCE_QUANTILE" \
         --bin-width 1000 \
         --missing-position-policy "$MISSING_POSITION_POLICY" \
-        "${polarity_option[@]}" \
         --seed "$SEED"
     date
 else
-    # The mask builder needs an existing target to supply te_row_indices.npy, so
-    # the real workflow is
-    #     preliminary unmasked target -> mask -> final masked target -> matching
-    # and the two targets must be different directories. An operator who passes
-    # the preliminary target here together with TE_POLARITY_MASK would otherwise
-    # get matching against the unmasked target: the block above is skipped, the
-    # mask is silently unused, and nothing in the output says so.
     echo "=== target $TARGET already exists; verifying it matches the request ==="
-    python - "$TARGET" "$A_TYPE" "$VCF_ELIGIBILITY" "$TE_POLARITY_MASK" "$MAX_FLIPPED_FRACTION" <<'PYEOF'
+    python - "$TARGET" "$A_TYPE" "$VCF_ELIGIBILITY" <<'PYEOF'
 import json, os, sys
 from pathlib import Path
 
-target, a_type, eligibility, requested_mask, requested_fraction = sys.argv[1:]
+target, a_type, eligibility = sys.argv[1:]
 meta = json.loads((Path(target) / "metadata.json").read_text(encoding="utf-8"))
-recorded = meta.get("te_polarity") or None
 
 if meta.get("a_type") != a_type:
     raise SystemExit(f"{target} records a_type={meta.get('a_type')!r}, requested {a_type!r}")
@@ -264,38 +235,13 @@ if used_identity != wanted_identity:
         f"VCF_ELIGIBILITY={wanted_eligibility} (identity fields differing: "
         f"{', '.join(differing)})."
     )
-
-if a_type == "SNP":
-    if recorded is not None:
-        raise SystemExit(f"SNP target {target} unexpectedly records a TE polarity mask")
-    print(f"target matches A_TYPE=SNP and eligibility {wanted_eligibility}")
-    sys.exit(0)
-
-if recorded is None:
+if (meta.get("te_polarity") or None) is not None:
     raise SystemExit(
-        f"TE_POLARITY_MASK was set, but {target} already exists and was built "
-        "WITHOUT a polarity mask. Matching would silently use the unmasked "
-        "target. Point TARGET at a new directory for the masked target; the "
-        "unmasked one is the preliminary target the mask was built against."
+        f"{target} was built with the TE polarity mask. TEs are now polarized "
+        "by the ARG posterior like SNPs; point TARGET at a new directory and "
+        "rebuild it without the mask."
     )
-
-used = str(Path(recorded["mask"]).resolve())
-want = str(Path(requested_mask).resolve())
-if used != want:
-    raise SystemExit(
-        f"{target} was built with polarity mask {used}, but TE_POLARITY_MASK "
-        f"requests {want}."
-    )
-
-recorded_fraction = recorded.get("max_flipped_fraction")
-wanted_fraction = float(requested_fraction) if requested_fraction else None
-if recorded_fraction != wanted_fraction:
-    raise SystemExit(
-        f"{target} was built with max_flipped_fraction={recorded_fraction}, "
-        f"but MAX_FLIPPED_FRACTION requests {wanted_fraction}."
-    )
-print(f"target matches the requested mask: {recorded['sites_kept']:,} TEs kept, "
-      f"max_flipped_fraction={recorded_fraction}")
+print(f"target matches A_TYPE={a_type} and eligibility {wanted_eligibility}")
 PYEOF
 fi
 

@@ -14,11 +14,12 @@
 # control sets B, and calibrate its Wasserstein distance against B-to-B null
 # distances.
 #
-# Polarity comes from two sources and neither is the VCF. TE sites are polarized
-# by biology -- a TE insertion is the derived state. B0 uses the ARG posterior
-# q-mixture, while each null-left SNP (and SNP A) is hard-oriented by a
-# reproducible Bernoulli(q) draw. Running this against an unpolarized VCF as
-# though REF were ancestral would mis-polarize about a third of all sites,
+# Polarity never comes from the VCF. Every site, TE and SNP alike, is polarized
+# by the ARG posterior, and by default A, B0 and every null-left set are
+# q-mixtures, so the observed and null comparisons are built identically.
+# ASYMMETRIC_POLARITY_NULL=true instead hard-orients A and every null-left set
+# by a reproducible Bernoulli(q) draw. Running this against an unpolarized VCF
+# as though REF were ancestral would mis-polarize about a third of all sites,
 # which is why --ancestral-table is required.
 #
 # The VCF must cover every requested site: the TE target plus every control SNP
@@ -46,7 +47,7 @@
 #   REFERENCE_REPLICATE  B0 replicate ID; unset draws B0 at random   (unset)
 #   REFERENCE_SEED   seed for the B0 draw, with the target digest   (1002)
 #   MIN_NULL_REPLICATES  floor on R, the number of QC-passing nulls    (900)
-#   ASYMMETRIC_POLARITY_NULL  true for Bernoulli-q left vs mixture B0 (true)
+#   ASYMMETRIC_POLARITY_NULL  true for Bernoulli-q left vs mixture B0 (false)
 #   POLARITY_IMPUTATION_SEED  coordinate-keyed Bernoulli-q seed         (2001)
 #   HETEROZYGOUS  error|missing for diploid calls                 (error)
 #
@@ -70,7 +71,7 @@ B_TYPE="${B_TYPE:-SNP}"
 REFERENCE_REPLICATE="${REFERENCE_REPLICATE:-}"
 REFERENCE_SEED="${REFERENCE_SEED:-1002}"
 MIN_NULL_REPLICATES="${MIN_NULL_REPLICATES:-900}"
-ASYMMETRIC_POLARITY_NULL="${ASYMMETRIC_POLARITY_NULL:-true}"
+ASYMMETRIC_POLARITY_NULL="${ASYMMETRIC_POLARITY_NULL:-false}"
 POLARITY_IMPUTATION_SEED="${POLARITY_IMPUTATION_SEED:-2001}"
 reference_option=()
 if [[ -n "$REFERENCE_REPLICATE" ]]; then
@@ -90,7 +91,7 @@ case "$ASYMMETRIC_POLARITY_NULL" in
         ;;
     false)
         polarity_option=(--no-asymmetric-polarity-null)
-        polarity_description="legacy posterior-mixture left versus posterior-mixture B0"
+        polarity_description="posterior-mixture left versus posterior-mixture B0"
         ;;
     *)
         echo "ASYMMETRIC_POLARITY_NULL must be exactly true or false" >&2

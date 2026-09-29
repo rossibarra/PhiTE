@@ -51,7 +51,7 @@ from .release_provenance import software_provenance
 
 
 SCHEMA_VERSION = "phi-contrast-v1"
-REQUIRED_RESULT_SCHEMA = "phi-sfs-wasserstein-v2"
+REQUIRED_RESULT_SCHEMA = "phi-sfs-wasserstein-v3"
 DEFAULT_SEED = 1002
 DEFAULT_PAIRING_REPEATS = 100
 _LABEL_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -240,7 +240,7 @@ def benjamini_hochberg(p_values: Sequence[float]) -> np.ndarray:
 
 @dataclass(frozen=True)
 class CategoryResult:
-    """One loaded phi-sfs-wasserstein-v2 result, as needed for a contrast."""
+    """One loaded phi-sfs-wasserstein-v3 result, as needed for a contrast."""
 
     label: str
     directory: Path
@@ -274,7 +274,7 @@ def _read_summary_z_score(directory: Path) -> float | None:
 
 
 def load_category(label: str, directory: Path) -> CategoryResult:
-    """Load and validate one phi-sfs-wasserstein-v2 result directory."""
+    """Load and validate one phi-sfs-wasserstein-v3 result directory."""
     metadata_path = directory / "metadata.json"
     if not metadata_path.exists():
         raise ValueError(f"{label} ({directory}): no metadata.json found")
@@ -568,7 +568,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--result", action="append", required=True, metavar="LABEL=DIR",
-        help="a phi-sfs-wasserstein-v2 result directory as LABEL=DIR; repeat for "
+        help="a phi-sfs-wasserstein-v3 result directory as LABEL=DIR; repeat for "
              "each category (at least two required)",
     )
     parser.add_argument("--output", type=Path, required=True,

@@ -628,8 +628,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--te-polarity-mask", type=Path,
         help="directory from normalize_tes.build_te_polarity_mask. Each TE site's age CDF "
              "is then built only from draws that polarized it in agreement with "
-             "biology, because a draw that called the insertion ancestral placed "
-             "the mutation on a different branch and recorded that branch's age",
+             "biology. Diagnostic only: the matcher and Phi-SFS refuse a masked "
+             "target, because TEs are polarized by the ARG like their SNP controls",
     )
     parser.add_argument(
         "-A", "--a-type", choices=("TE", "SNP"), default="TE",
@@ -645,9 +645,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-flipped-fraction", type=float, default=None,
         help="discard any TE whose flipped fraction, among draws with data for "
-             "it, exceeds this. Requires --te-polarity-mask. A TE the ARG mostly "
-             "disagrees with is unreliable whether the cause is inference failure "
-             "or a genuine fixed-then-deleted insertion",
+             "it, exceeds this. Requires --te-polarity-mask. Diagnostic only: the "
+             "matcher and Phi-SFS refuse a target filtered this way",
     )
     parser.add_argument("--seed", type=int, default=None,
                         help="seed for the bootstrap resampling")

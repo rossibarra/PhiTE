@@ -29,10 +29,7 @@ from .swap_control_sampler import (
     incremental_cdf,
     row_cdfs,
 )
-from .te_age_target import (
-    masked_row_cdfs,
-    wasserstein_1,
-)
+from .te_age_target import wasserstein_1
 
 
 SCHEMA_VERSION = "bootstrap-target-matches-v1"
@@ -588,23 +585,16 @@ def _validate_inputs(store: object, target_meta: dict, a_type: str) -> None:
     _require_eligibility_identity(
         eligibility.get("identity"), "target metadata vcf_eligibility.identity"
     )
-    te_polarity = target_meta.get("te_polarity")
-    if a_type == "TE":
-        if not isinstance(te_polarity, dict):
-            raise ValueError(
-                "-A TE requires a final target built with --te-polarity-mask "
-                "and --max-flipped-fraction 0.5"
-            )
-        threshold = te_polarity.get("max_flipped_fraction")
-        if not isinstance(threshold, (int, float)) or not math.isclose(
-            float(threshold), 0.5, rel_tol=0.0, abs_tol=1e-12
-        ):
-            raise ValueError(
-                "-A TE requires max_flipped_fraction=0.5 so exact 50% "
-                "derived-support ties are retained"
-            )
-    elif te_polarity is not None:
-        raise ValueError("-A SNP target must not apply the TE polarity filter")
+    # A TE is polarized by the ARG posterior exactly as its SNP controls are,
+    # so its ages come from all draws and no TE is filtered on ARG polarity.
+    # A masked target conditions A alone on that polarity, which in simulation
+    # produced excess rejection, so it is refused for either type.
+    if target_meta.get("te_polarity") is not None:
+        raise ValueError(
+            "target was built with the TE polarity mask; rebuild it without "
+            "--te-polarity-mask or --max-flipped-fraction so A's ages and "
+            "sites are conditioned the same way as its SNP controls"
+        )
     if expected_schema is not None and expected_schema != actual_schema:
         raise ValueError("target and store schemas differ")
     if expected_content is not None and expected_content != actual_content:
@@ -1244,35 +1234,20 @@ def run(args: argparse.Namespace) -> None:
         SEARCH_LOG_OFFSET,
     )
     print(f"coarse_grid=log points={coarse_points.size}", flush=True)
-    # A target built with a polarity mask defines each TE's age CDF over its
-    # agreeing draws only. Rebuilding from the store without the mask would not
-    # merely fail the reconstruction check below -- it would hand every one of
-    # the bootstrap targets the mis-polarized ages the mask exists to remove,
-    # while the observed target kept them out. So the mask is required, not
-    # optional, whenever the target records one.
-    keep_path = args.target / "te_keep_draws.npy"
-    declares_mask = (target_meta.get("te_polarity") or None) is not None
-    if declares_mask and not keep_path.exists():
+    # `_validate_inputs` has refused any target that declares a polarity mask.
+    # A per-TE draw mask on disk without that declaration would still mean the
+    # target's CDFs were built over a subset of draws that the bootstrap
+    # targets below, rebuilt from all draws, do not share.
+    if (args.target / "te_keep_draws.npy").exists():
         raise ValueError(
-            f"{args.target} records a polarity mask in its metadata but has no "
-            "te_keep_draws.npy. Its per-TE CDFs cannot be reproduced, and the "
-            "bootstrap targets derived from them would silently disagree with "
-            "the target. Rebuild the target with the current normalize_tes.te_age_target."
+            f"{args.target} carries te_keep_draws.npy, so its TE age CDFs were "
+            "built from a per-draw polarity mask. Rebuild the target without "
+            "--te-polarity-mask."
         )
-    if keep_path.exists():
-        keep_draws = np.load(keep_path, allow_pickle=False)
-        if keep_draws.shape[0] != target_rows.size:
-            raise ValueError(
-                "te_keep_draws.npy does not align with the target's TE rows"
-            )
-        te_cdf_rows = masked_row_cdfs(
-            store, target_rows, points, keep_draws,
-        ).astype(np.float32)
-    else:
-        te_cdf_rows = row_cdfs(
-            store, target_rows, points,
-            block_rows=config.cdf_block_rows, dtype=np.dtype("float32"),
-        )
+    te_cdf_rows = row_cdfs(
+        store, target_rows, points,
+        block_rows=config.cdf_block_rows, dtype=np.dtype("float32"),
+    )
     reconstructed = te_cdf_rows.mean(axis=0, dtype=np.float64)
     if not np.allclose(reconstructed, observed_target, rtol=1e-6, atol=1e-7):
         raise ValueError("target CDF does not match exact TE-row reconstruction")

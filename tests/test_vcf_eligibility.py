@@ -188,6 +188,34 @@ def test_published_mask_authenticates_store_and_projection_size(tmp_path):
     assert loaded_snp.identity == expected_identity
 
 
+def test_te_rows_are_the_orientable_subset_like_snp_rows(tmp_path):
+    """Phi-SFS orients a TE from the ARG, so an unorientable TE cannot enter A."""
+    store = _store()
+    result = EligibilityResult(
+        rows=np.array([0, 1, 2], dtype=np.int64),
+        alt_counts=np.array([1, 2, 3], dtype=np.uint32),
+        callable_counts=np.array([20, 20, 20], dtype=np.uint32),
+        report={
+            "schema_version": "vcf-eligibility-v1",
+            "eligible_rows": 3,
+            "min_callable": 20,
+            "vcf_sha256": "vcf-fake-hash",
+            "heterozygous": "error",
+            "store_content_sha256": "content",
+            "store_catalog_sha256": "catalog",
+        },
+        snp_rows=np.array([0, 2], dtype=np.int64),
+        p_alt_derived=np.array([0.25, 0.75]),
+    )
+    mask = tmp_path / "mask"
+    publish(mask, result, {})
+    loaded_te = load_eligibility(mask, store, variant_type="TE", expected_min_callable=20)
+    loaded_snp = load_eligibility(mask, store, variant_type="SNP", expected_min_callable=20)
+    np.testing.assert_array_equal(loaded_te.rows, [0, 2])
+    np.testing.assert_array_equal(loaded_te.rows, loaded_snp.rows)
+    np.testing.assert_allclose(loaded_te.p_alt_derived, [0.25, 0.75])
+
+
 def test_eligibility_identity_requires_every_field():
     complete = {
         "vcf_sha256": "vcf-hash",

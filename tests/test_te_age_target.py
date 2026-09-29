@@ -279,8 +279,10 @@ def test_target_metadata_carries_vcf_eligibility_identity(tmp_path, monkeypatch)
             "store_content_sha256": "content",
             "store_catalog_sha256": "catalog",
         },
-        snp_rows=np.array([], dtype=np.int64),
-        p_alt_derived=np.array([], dtype=np.float64),
+        # Every row is ARG-orientable: a TE target, like a SNP one, keeps only
+        # orientable rows.
+        snp_rows=np.array([0, 1, 2], dtype=np.int64),
+        p_alt_derived=np.full(3, 0.5, dtype=np.float64),
     )
     publish(mask, result, {})
     expected_identity = eligibility_identity(

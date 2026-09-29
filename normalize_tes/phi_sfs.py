@@ -14,11 +14,15 @@ Input assumptions, all of which are recorded in the output metadata:
 * The VCF FILTER column is ignored. The declared input is the already
   filtered preprocessing VCF, so every record at a requested coordinate is used.
 * The VCF is **not** assumed to be polarized, and no REF or INFO annotation is
-  consulted. TE sites are polarized by biology -- an insertion is the derived
-  state. The reference SNP set B0 is represented by the ARG posterior mixture,
-  while each null-left SNP and a SNP focal A are hard-oriented by a reproducible
-  Bernoulli(q) draw by default. This asymmetric null reproduces the observed
-  comparison's hard-versus-uncertain polarity architecture.
+  consulted. Every site, TE and SNP alike, is polarized by the ARG: its weight
+  is the posterior proportion of usable draws in which ALT is derived, and its
+  contribution is the q-mixture of its two orientations. TE records are A/G
+  biallelic sites in the ARG like any other, so the same ancestral table orients
+  them, and a TE whose absence is derived is counted at the absence frequency.
+  By default A, B0 and every null-left set are all posterior mixtures, so the
+  observed and null comparisons are built identically.
+  `--asymmetric-polarity-null` instead hard-orients A and every null-left set
+  by one reproducible Bernoulli(q) draw per site, keeping B0 a mixture.
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ from .vcf_io import (  # noqa: F401 -- re-exported for existing callers
 )
 
 
-SCHEMA_VERSION = "phi-sfs-wasserstein-v2"
+SCHEMA_VERSION = "phi-sfs-wasserstein-v3"
 ASYMMETRIC_NULL_DESIGN = (
     "bernoulli-q-hard-vs-posterior-mixture"
 )
@@ -87,9 +91,8 @@ class SiteCount:
     """One site's observed counts, with polarity carried rather than applied.
 
     `alt` and `callable` come from the genotypes and are polarity-independent.
-    `p_alt_derived` is the probability that ALT is the derived allele: exactly 1
-    at a TE site, where insertion is derived by biology, and the ARG's posterior
-    proportion at a SNP site, whether that SNP is in A or in B. Orientation is
+    `p_alt_derived` is the probability that ALT is the derived allele: the ARG's
+    posterior proportion at every site, TE or SNP, in A or in B. Orientation is
     applied when spectra are summed, not here, because that is the only step
     that depends on it.
     """
@@ -439,21 +442,22 @@ def _checked_table_array(path: Path, shape: tuple[int, ...]) -> np.ndarray:
 
 
 class PolarityResolver:
-    """Resolves P(ALT is derived) per site, from two sources.
+    """Resolves P(ALT is derived) per site from the ARG ancestral table.
 
-    TE sites are polarized by biology: a TE insertion is the derived state, and
-    the genotyping convention encodes presence as ALT, so the weight is exactly
-    1. The rare exception -- a TE that fixed and was later removed by a deletion
-    -- is not modelled; it accounts for about 3% of TE sites and identifying it
-    would need an independent outgroup.
+    TE and SNP sites are resolved the same way. A TE insertion is biologically
+    derived, but taking that as known while the SNP controls carry the ARG's
+    uncertain polarity makes the observed and null comparisons differ in
+    construction, and in simulation that asymmetry alone produced large excess
+    rejection. So a TE is oriented by the ARG exactly as a SNP is; TE records
+    are A/G sites (A = absence) and a draw calling G ancestral makes absence the
+    derived allele. `te_coordinates` is used only to count the two kinds apart.
 
-    SNP sites cannot be polarized that way, whether that SNP sits in A (with
-    `-A SNP`) or in the B control pool. Their weight is the posterior
-    proportion of ARG draws calling REF ancestral -- equivalently, ALT derived --
-    among the draws that named one of the two observed alleles. Conditioning that
-    way rather than on the raw present-draw count is what lets every requested
-    site carry a weight without an intersection across draws or a fallback rule,
-    and it discards draws naming a third base, which cannot orient the site.
+    The weight is the posterior proportion of ARG draws calling REF ancestral --
+    equivalently, ALT derived -- among the draws that named one of the two
+    observed alleles. Conditioning that way rather than on the raw present-draw
+    count is what lets every requested site carry a weight without an
+    intersection across draws or a fallback rule, and it discards draws naming a
+    third base, which cannot orient the site.
 
     The proportion is used as reported. Against TE ground truth the ARG is only
     about 91% correct where all its draws agree, so this weight is somewhat
@@ -481,14 +485,13 @@ class PolarityResolver:
         self._counts = ancestral_counts
         self._present = present_draw_count
         self.te_sites = 0
+        self.te_usable_draws = 0
+        self.te_unusable_draws = 0
         self.control_sites = 0
         self.control_usable_draws = 0
         self.control_unusable_draws = 0
 
     def __call__(self, chrom: str, position: int, ref: str, alt: str) -> float:
-        if (chrom, position) in self._te:
-            self.te_sites += 1
-            return 1.0
         offset = self._offsets.get(chrom)
         if offset is None:
             raise ValueError(f"no chromosome offset for {chrom!r}")
@@ -496,7 +499,7 @@ class PolarityResolver:
         index = int(np.searchsorted(self._positions, target))
         if index >= self._positions.size or self._positions[index] != target:
             raise ValueError(
-                f"control site {chrom}:{position} is absent from the ancestral "
+                f"site {chrom}:{position} is absent from the ancestral "
                 "table; it cannot be polarized"
             )
         if ref not in self.BASES or alt not in self.BASES:
@@ -520,10 +523,15 @@ class PolarityResolver:
                 f"no posterior draw at {chrom}:{position} calls either observed "
                 f"allele ({ref}/{alt}) ancestral; it cannot be polarized"
             )
-        self.control_sites += 1
-        self.control_usable_draws += int(oriented)
-        self.control_unusable_draws += int(self._present[index] - row.sum())
-        self.control_unusable_draws += int(row.sum() - oriented)
+        unusable = int(self._present[index] - oriented)
+        if (chrom, position) in self._te:
+            self.te_sites += 1
+            self.te_usable_draws += int(oriented)
+            self.te_unusable_draws += unusable
+        else:
+            self.control_sites += 1
+            self.control_usable_draws += int(oriented)
+            self.control_unusable_draws += unusable
         return ref_calls / oriented
 
 
@@ -729,11 +737,14 @@ def _validate_target_authority(target_meta: dict, match_meta: dict, a_type: str)
 
     Mirrors `bootstrap_target_matcher._validate_inputs` (wording only; that
     helper is private to the matcher and is not imported here). Without this,
-    `--a-type` is trusted blindly: a SNP target run with `-A TE` silently adds
-    every SNP to `PolarityResolver`'s TE set and treats ALT as derived with
-    weight 1, producing a complete, plausible, and wrong result. These checks
-    must pass before `a_polarity_rule` is written to the output metadata or
-    the VCF is scanned.
+    `--a-type` is trusted blindly and the output metadata mislabels A's variant
+    type, which `phi_contrast` then groups on. These checks must pass before
+    `a_polarity_rule` is written to the output metadata or the VCF is scanned.
+
+    A target built with the TE polarity mask is refused for either type: its
+    at-least-50%-derived filter and agreeing-draw ages condition A on the ARG's
+    polarity in a way no SNP control set is, which is the asymmetry the
+    posterior-polarity design removes.
     """
     target_a_type = target_meta.get("a_type")
     if target_a_type not in ("TE", "SNP"):
@@ -751,23 +762,12 @@ def _validate_target_authority(target_meta: dict, match_meta: dict, a_type: str)
             f"--a-type {a_type} disagrees with matched-control metadata "
             f"a_type={match_a_type}"
         )
-    te_polarity = target_meta.get("te_polarity")
-    if a_type == "TE":
-        if not isinstance(te_polarity, dict):
-            raise ValueError(
-                "-A TE requires a final target built with --te-polarity-mask "
-                "and --max-flipped-fraction 0.5"
-            )
-        threshold = te_polarity.get("max_flipped_fraction")
-        if not isinstance(threshold, (int, float)) or not math.isclose(
-            float(threshold), 0.5, rel_tol=0.0, abs_tol=1e-12
-        ):
-            raise ValueError(
-                "-A TE requires max_flipped_fraction=0.5 so exact 50% "
-                "derived-support ties are retained"
-            )
-    elif te_polarity is not None:
-        raise ValueError("-A SNP target must not apply the TE polarity filter")
+    if target_meta.get("te_polarity") is not None:
+        raise ValueError(
+            "target was built with the TE polarity mask; A is polarized by the "
+            "ARG posterior like its SNP controls, so rebuild the target and "
+            "matches without --te-polarity-mask or --max-flipped-fraction"
+        )
     eligibility = target_meta.get("vcf_eligibility")
     if not isinstance(eligibility, dict) or not eligibility.get("mask"):
         raise ValueError(
@@ -1095,7 +1095,7 @@ def calculate(args: argparse.Namespace) -> None:
         progress=not args.quiet,
     )
     print(
-        f"polarity: {polarity.te_sites:,} TE sites from biology, "
+        f"polarity: {polarity.te_sites:,} TE sites and "
         f"{polarity.control_sites:,} SNP sites from the ancestral table",
         flush=True,
     )
@@ -1122,7 +1122,9 @@ def calculate(args: argparse.Namespace) -> None:
         flush=True,
     )
 
-    a_uses_hard_imputation = args.asymmetric_polarity_null and args.a_type == "SNP"
+    # A is polarized exactly as the null-left sets are, whatever its type, so
+    # the observed and null distances differ only in which sites they hold.
+    a_uses_hard_imputation = args.asymmetric_polarity_null
     a_counts, a_endpoint, a_eligible = accumulate_spectrum(
         te_coordinates,
         hard_site_rows if a_uses_hard_imputation else site_rows,
@@ -1258,9 +1260,7 @@ def calculate(args: argparse.Namespace) -> None:
     )
     hard_polarity_rule = "coordinate-keyed hard Bernoulli(q) orientation"
     a_polarity_rule = (
-        "insertion presence is derived after upstream at-least-50%-derived retention"
-        if args.a_type == "TE"
-        else hard_polarity_rule if args.asymmetric_polarity_null else mixture_polarity_rule
+        hard_polarity_rule if args.asymmetric_polarity_null else mixture_polarity_rule
     )
     null_left_polarity_rule = (
         hard_polarity_rule if args.asymmetric_polarity_null else mixture_polarity_rule
@@ -1475,6 +1475,9 @@ def calculate(args: argparse.Namespace) -> None:
             "ancestral_table": str(Path(args.ancestral_table).resolve()),
             "ancestral_table_schema_version": store_meta.get("schema_version"),
             "te_sites_polarized": polarity.te_sites,
+            "te_usable_arg_draws": polarity.te_usable_draws,
+            "te_unusable_arg_draws": polarity.te_unusable_draws,
+            "te_polarity_source": "ARG posterior ancestral table, as for SNPs",
             "snp_sites_polarized": polarity.control_sites,
             "snp_usable_arg_draws": polarity.control_usable_draws,
             "snp_unusable_arg_draws": polarity.control_unusable_draws,
@@ -1594,16 +1597,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--ancestral-table", type=Path, required=True,
-        help="directory written by normalize_tes.build_ancestral_states, giving SNP "
-             "sites their posterior polarity; A uses it when --a-type SNP",
+        help="directory written by normalize_tes.build_ancestral_states, giving "
+             "every site, TE and SNP, its posterior polarity",
     )
     parser.add_argument(
         "--asymmetric-polarity-null", action=argparse.BooleanOptionalAction,
-        default=True,
-        help="known-versus-uncertain polarity calibration (default: enabled): keep B0 "
-             "as the posterior q-mixture, but hard-polarize each null-left SNP "
-             "with a Bernoulli(q) draw; with -A SNP, hard-polarize A the same way; "
-             "use --no-asymmetric-polarity-null for the legacy mixture-vs-mixture null",
+        default=False,
+        help="hard-polarize A and each null-left set with one Bernoulli(q) draw "
+             "per site while keeping B0 the posterior q-mixture. The default, "
+             "--no-asymmetric-polarity-null, keeps A, B0 and every null-left "
+             "set as posterior q-mixtures",
     )
     parser.add_argument(
         "--polarity-imputation-seed", type=int, default=2001,

@@ -412,7 +412,13 @@ def load_eligibility(
     variant_type: str,
     expected_min_callable: int | None = None,
 ) -> LoadedEligibility:
-    """Load authenticated TE-callable or SNP-callable-and-orientable rows."""
+    """Load authenticated callable-and-ARG-orientable rows.
+
+    TE and SNP rows are selected identically: Phi-SFS polarizes a TE from the
+    ARG posterior exactly as it does a SNP, so a TE that no draw orients cannot
+    enter A any more than such a SNP can enter B. `variant_type` is still
+    validated so callers declare which role they are loading.
+    """
     if variant_type not in ("TE", "SNP"):
         raise ValueError("variant_type must be TE or SNP")
     metadata = json.loads((mask_dir / "metadata.json").read_text(encoding="utf-8"))
@@ -463,9 +469,6 @@ def load_eligibility(
     if np.any(callable_counts < minimum) or np.any(alt_counts > callable_counts):
         raise SystemExit(f"{mask_dir}: stored allele/callability counts are inconsistent")
     identity = eligibility_identity(metadata)
-    if variant_type == "TE":
-        return LoadedEligibility(rows, alt_counts, callable_counts, None, metadata, identity)
-
     snp_rows = np.load(mask_dir / "snp_row_indices.npy", allow_pickle=False)
     q_values = np.load(mask_dir / "p_alt_derived.npy", allow_pickle=False)
     for name, values in (("snp_row_indices", snp_rows), ("p_alt_derived", q_values)):

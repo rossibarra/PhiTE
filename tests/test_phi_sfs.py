@@ -122,16 +122,16 @@ def test_bernoulli_q_projection_is_hard_reproducible_and_has_expected_rate():
         )
 
 
-def test_asymmetric_polarity_null_is_default_with_explicit_opt_out():
+def test_mixture_polarity_null_is_default_with_explicit_bernoulli_opt_in():
     required = [
         "--target", "target", "--matches", "matches", "--vcf", "sites.vcf",
         "--output", "output", "--ancestral-table", "ancestral",
     ]
     default = parse_args(required)
-    assert default.asymmetric_polarity_null is True
+    assert default.asymmetric_polarity_null is False
     assert default.polarity_imputation_seed == 2001
-    legacy = parse_args([*required, "--no-asymmetric-polarity-null"])
-    assert legacy.asymmetric_polarity_null is False
+    bernoulli = parse_args([*required, "--asymmetric-polarity-null"])
+    assert bernoulli.asymmetric_polarity_null is True
 
 
 def test_accumulation_is_order_invariant_and_counts_repeats():
@@ -309,15 +309,16 @@ def _write_bundle(
     row_indices=None,
     target_digest=None,
     a_type="TE",
-    include_te_polarity=None,
+    include_te_polarity=False,
     max_flipped_fraction=0.5,
     heterozygous="error",
 ):
     """Write a target and matched-control bundle that pass provenance checks.
 
-    Defaults declare a valid TE target: `a_type` "TE", a `te_polarity` record
-    at the required `max_flipped_fraction=0.5`, and a `vcf_eligibility` record
-    carrying an `identity` dict. The matched-control metadata mirrors `a_type`
+    Defaults declare a valid TE target: `a_type` "TE", no `te_polarity` record
+    (a masked target is refused), and a `vcf_eligibility` record carrying an
+    `identity` dict. `include_te_polarity=True` writes a masked-target record
+    at `max_flipped_fraction`. The matched-control metadata mirrors `a_type`
     and carries the identical `vcf_eligibility_identity` dict, as the matcher
     is contracted to copy it from the candidate report. `identity["vcf_sha256"]`
     is a placeholder here because no VCF exists yet at bundle-construction
@@ -328,9 +329,6 @@ def _write_bundle(
     matches = root / "matches"
     target.mkdir()
     matches.mkdir()
-
-    if include_te_polarity is None:
-        include_te_polarity = a_type == "TE"
 
     te_rows = np.array([0, 1], dtype=np.int64)
     cdf = np.array([0.5, 1.0], dtype=np.float64)
@@ -568,8 +566,10 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
     metadata = json.loads((output / "metadata.json").read_text())
     assert metadata["complete"] is True
     assert metadata["schema_version"] == SCHEMA_VERSION
-    assert metadata["null_polarity_design"] == ASYMMETRIC_NULL_DESIGN
-    assert metadata["polarity_imputation_seed"] == 2001
+    assert metadata["null_polarity_design"] == SYMMETRIC_NULL_DESIGN
+    assert metadata["polarity_imputation_seed"] is None
+    assert metadata["te_sites_polarized"] == 2
+    assert metadata["te_polarity_source"] == "ARG posterior ancestral table, as for SNPs"
     assert metadata["accepted_null_replicates"] == 2
     assert metadata["a_eligible_sites"] == 2
     assert metadata["equal_eligible_site_count"] == 2
@@ -774,7 +774,7 @@ def test_asymmetric_null_uses_hard_snp_left_and_mixture_reference(tmp_path):
     assert _run(
         target, matches, vcf, output,
         "-A", "SNP", "-B", "SNP", "--ancestral-table", str(table),
-        "--polarity-imputation-seed", "17",
+        "--asymmetric-polarity-null", "--polarity-imputation-seed", "17",
     ) == 0
     a = np.load(output / "a_normalized_sfs.npy")
     b_mix = np.load(output / "b_normalized_sfs.npy")
@@ -813,7 +813,50 @@ def test_asymmetric_null_uses_hard_snp_left_and_mixture_reference(tmp_path):
     )
 
 
-def test_default_te_observed_is_biological_hard_vs_mixture_reference(tmp_path):
+def test_default_te_is_posterior_mixture_like_its_controls(tmp_path):
+    """A TE is oriented by the ARG exactly as a SNP is, and so are the nulls.
+
+    q = 0.25 at every site (A called ancestral by 25 of 100 draws), so each TE
+    contributes 0.25 at its ALT count and 0.75 at the absence count.
+    """
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    table = _ancestral_table(tmp_path)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[:, 0] = 25
+    counts[:, 2] = 75
+    np.save(table / "ancestral_counts.npy", counts)
+    np.save(
+        table / "present_draw_count.npy",
+        np.full(counts.shape[0], 100, dtype=np.uint16),
+    )
+
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    a = np.load(output / "a_normalized_sfs.npy")
+    assert a[3] == pytest.approx(0.125)    # q * TE at 10 (k=4), bin 4
+    assert a[15] == pytest.approx(0.375)   # (1-q) * TE at 10, bin 16
+    assert a[7] == pytest.approx(0.125)    # q * TE at 20 (k=8), bin 8
+    assert a[11] == pytest.approx(0.375)   # (1-q) * TE at 20, bin 12
+    b_mix = np.load(output / "b_normalized_sfs.npy")
+    assert np.load(output / "observed_phi_sfs.npy").item() == pytest.approx(
+        phi_sfs(a, b_mix[0]).value
+    )
+    assert np.load(output / "null_phi_sfs.npy").tolist() == pytest.approx([
+        phi_sfs(b_mix[1], b_mix[0]).value,
+        phi_sfs(b_mix[2], b_mix[0]).value,
+    ])
+    assert not (output / "b_bernoulli_q_normalized_sfs.npy").exists()
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["a_polarity_rule"] == metadata["b_polarity_rule"]
+    assert metadata["null_left_polarity_rule"] == metadata["b_polarity_rule"]
+    assert metadata["null_polarity_design"] == SYMMETRIC_NULL_DESIGN
+    assert metadata["te_sites_polarized"] == 2
+    assert metadata["te_usable_arg_draws"] == 200
+
+
+def test_bernoulli_design_hard_orients_te_a_like_the_nulls(tmp_path):
     target, matches = _write_bundle(tmp_path)
     vcf = tmp_path / "sites.vcf"
     vcf.write_text(_vcf_text())
@@ -829,12 +872,13 @@ def test_default_te_observed_is_biological_hard_vs_mixture_reference(tmp_path):
 
     output = tmp_path / "phi"
     assert _run(
-        target, matches, vcf, output,
-        "--ancestral-table", str(table), "--polarity-imputation-seed", "17",
+        target, matches, vcf, output, "--ancestral-table", str(table),
+        "--asymmetric-polarity-null", "--polarity-imputation-seed", "17",
     ) == 0
     a = np.load(output / "a_normalized_sfs.npy")
     b_mix = np.load(output / "b_normalized_sfs.npy")
     b_hard = np.load(output / "b_bernoulli_q_normalized_sfs.npy")
+    assert np.count_nonzero(a) == 2
     assert np.load(output / "observed_phi_sfs.npy").item() == pytest.approx(
         phi_sfs(a, b_mix[0]).value
     )
@@ -843,8 +887,31 @@ def test_default_te_observed_is_biological_hard_vs_mixture_reference(tmp_path):
         phi_sfs(b_hard[2], b_mix[0]).value,
     ])
     metadata = json.loads((output / "metadata.json").read_text())
-    assert metadata["a_polarity_rule"].startswith("insertion presence is derived")
+    assert metadata["a_polarity_rule"] == "coordinate-keyed hard Bernoulli(q) orientation"
     assert metadata["null_polarity_design"] == ASYMMETRIC_NULL_DESIGN
+
+
+def test_te_with_absence_derived_counts_at_absence_frequency(tmp_path):
+    """A draw set calling presence (G) ancestral makes absence the derived allele."""
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    table = _ancestral_table(tmp_path)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[0, 0] = 0      # TE at 10, k = 4: no draw calls absence ancestral
+    counts[0, 2] = 100
+    np.save(table / "ancestral_counts.npy", counts)
+    np.save(
+        table / "present_draw_count.npy",
+        np.full(counts.shape[0], 100, dtype=np.uint16),
+    )
+
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    a = np.load(output / "a_normalized_sfs.npy")
+    assert a[15] == pytest.approx(0.5)    # absence derived at 16 of 20
+    assert a[7] == pytest.approx(0.5)     # TE at 20 keeps presence derived, bin 8
+    assert a[3] == pytest.approx(0.0)
 
 
 def test_explicit_reference_id_controls_b0_and_null_identities(tmp_path):
@@ -1389,14 +1456,11 @@ def test_duplicate_controls_within_a_set_are_rejected(tmp_path):
 
 
 def test_table_calling_alt_ancestral_reverses_polarization(tmp_path):
-    """Flipping the table mirrors the control spectra and leaves the TE one alone.
+    """Flipping the table mirrors the TE and control spectra alike.
 
-    Every record is `A`/`G`. For a control SNP, a table naming `A` ancestral
-    makes the derived count its ALT count, and naming `G` ancestral makes it
-    `n - alt`, so the two control spectra must be mirror images. TE sites are
-    polarized by biology and never consult the table, so the TE spectrum must be
-    identical across the two runs -- which is the asymmetry the two-arm design
-    exists to produce.
+    Every record is `A`/`G`. A table naming `A` ancestral makes the derived
+    count the ALT count, and naming `G` ancestral makes it `n - alt`. TE sites
+    are polarized from the same table as SNPs, so both A and B must mirror.
     """
     target, matches = _write_bundle(tmp_path)
     vcf = tmp_path / "v.vcf"
@@ -1417,12 +1481,10 @@ def test_table_calling_alt_ancestral_reverses_polarization(tmp_path):
     assert _run(target, matches, vcf, out_r, "--ancestral-table",
                 str(reversed_table)) == 0
 
-    # The TE spectrum is polarized by biology and must be untouched by the table.
     np.testing.assert_allclose(
         np.load(out_f / "a_normalized_sfs.npy"),
-        np.load(out_r / "a_normalized_sfs.npy"), atol=1e-12,
+        np.load(out_r / "a_normalized_sfs.npy")[::-1], atol=1e-12,
     )
-    # The control spectra are polarized by the table, so they must mirror.
     a = np.load(out_f / "b_normalized_sfs.npy")
     b = np.load(out_r / "b_normalized_sfs.npy")
     np.testing.assert_allclose(a, b[:, ::-1], atol=1e-12)
@@ -1460,20 +1522,13 @@ def test_snp_target_run_with_a_type_te_is_rejected(tmp_path):
         _run(target, matches, vcf, tmp_path / "phi", "-A", "TE")
 
 
-def test_te_target_without_te_polarity_is_rejected(tmp_path):
-    target, matches = _write_bundle(tmp_path, include_te_polarity=False)
+@pytest.mark.parametrize("a_type", ["TE", "SNP"])
+def test_target_built_with_te_polarity_mask_is_rejected(tmp_path, a_type):
+    target, matches = _write_bundle(tmp_path, a_type=a_type, include_te_polarity=True)
     vcf = tmp_path / "sites.vcf"
     vcf.write_text(_vcf_text())
-    with pytest.raises(ValueError, match="--te-polarity-mask"):
-        _run(target, matches, vcf, tmp_path / "phi")
-
-
-def test_te_target_with_wrong_max_flipped_fraction_is_rejected(tmp_path):
-    target, matches = _write_bundle(tmp_path, max_flipped_fraction=0.6)
-    vcf = tmp_path / "sites.vcf"
-    vcf.write_text(_vcf_text())
-    with pytest.raises(ValueError, match="max_flipped_fraction=0.5"):
-        _run(target, matches, vcf, tmp_path / "phi")
+    with pytest.raises(ValueError, match="TE polarity mask"):
+        _run(target, matches, vcf, tmp_path / "phi", "-A", a_type)
 
 
 def test_target_and_match_vcf_eligibility_identity_mismatch_is_rejected(tmp_path):

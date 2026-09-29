@@ -41,12 +41,15 @@ ELIGIBILITY_IDENTITY = {
 
 
 def _target(path, store_path, **kwargs):
-    """The shared fixture target, plus the eligibility identity it now records."""
+    """The shared fixture target as a production TE target: the eligibility
+    identity it records, and no TE polarity mask, which the matcher refuses."""
     target = _base_target(path, store_path, **kwargs)
     metadata_path = target / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["vcf_eligibility"]["identity"] = dict(ELIGIBILITY_IDENTITY)
+    metadata.pop("te_polarity", None)
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    (target / "te_keep_draws.npy").unlink()
     return target
 
 
@@ -136,9 +139,7 @@ def test_snp_a_uses_snp_filtered_target_without_te_polarity(tmp_path):
     metadata_path = target / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["a_type"] = "SNP"
-    metadata["te_polarity"] = None
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    (target / "te_keep_draws.npy").unlink()
 
     output = tmp_path / "output"
     assert _run_matcher(store, target, output, "-A", "SNP") == 0
@@ -146,14 +147,25 @@ def test_snp_a_uses_snp_filtered_target_without_te_polarity(tmp_path):
     assert published["a_type"] == "SNP"
 
 
-def test_te_a_requires_inclusive_half_derived_filter(tmp_path):
+@pytest.mark.parametrize("a_type", ["TE", "SNP"])
+def test_target_built_with_te_polarity_mask_is_refused(tmp_path, a_type):
     store = _interval_store(tmp_path / "store")
     target = _target(tmp_path / "target", store)
     metadata_path = target / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    metadata["te_polarity"]["max_flipped_fraction"] = 0.49
+    metadata["a_type"] = a_type
+    metadata["te_polarity"] = {"max_flipped_fraction": 0.5}
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    with pytest.raises(ValueError, match="max_flipped_fraction=0.5"):
+    with pytest.raises(ValueError, match="TE polarity mask"):
+        _run_matcher(store, target, tmp_path / "output", "-A", a_type)
+
+
+def test_te_target_with_undeclared_draw_mask_is_refused(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    rows = np.load(target / "te_row_indices.npy")
+    np.save(target / "te_keep_draws.npy", np.ones((rows.size, 1), dtype=bool))
+    with pytest.raises(ValueError, match="te_keep_draws.npy"):
         _run_matcher(store, target, tmp_path / "output")
 
 
