@@ -49,12 +49,14 @@ git checkout COMMIT_HASH
 
 The workflow expects:
 
-- posterior ARG draws; the ancestry and TE-polarity stages require tszip archives;
+- posterior ARG draws; the ancestry stage requires tszip archives;
 - SNP and TE position files with two whitespace-separated columns: chromosome and
   1-based VCF position;
 - chromosome labels matching the ARG metadata or a compatible chromosome-offset
   file supplied when the store is built;
-- a filtered, genome-wide, biallelic VCF in which TE ALT encodes insertion/presence;
+- a filtered, genome-wide, biallelic VCF in which every TE is an ACGT-coded site
+  with the same alleles as in the ARGs (this dataset uses `A` for absence and `G`
+  for presence), so the ancestral table can orient it like a SNP;
 - node-local `$TMPDIR` for interval-store and target scratch data;
 - durable storage for published outputs and matcher resume state.
 
@@ -78,8 +80,6 @@ VCF=/path/variants.vcf.gz
 
 STORE=results/age_interval_store
 CANDIDATES=results/candidate_rows.npy
-PRELIM_TARGET=results/targets/in_gene_prelim
-POLARITY_MASK=results/te_polarity_masks/in_gene
 TARGET=results/targets/in_gene
 MATCHES=results/bootstrap_matches/in_gene
 WORK_DIR=results/work/in_gene
@@ -87,7 +87,7 @@ ANCESTRAL=results/ancestral_states
 ELIGIBILITY=results/vcf_eligibility
 PHI=results/phi_sfs/in_gene
 
-mkdir -p results results/targets results/te_polarity_masks \
+mkdir -p results results/targets \
   results/bootstrap_matches results/work results/phi_sfs
 ```
 
@@ -185,14 +185,16 @@ python -m normalize_tes.vcf_eligibility \
 |---|---|
 | `--vcf` | filtered biallelic analysis VCF |
 | `--store` | interval store defining the row universe |
-| `--ancestral-table` | authenticated posterior ancestral-state counts for SNP orientation |
+| `--ancestral-table` | authenticated posterior ancestral-state counts for site orientation |
 | `--output` | new eligibility directory |
 | `--min-callable` | minimum callable individuals per site; production uses 20 |
 | `--heterozygous` | reject heterozygous inbred calls, or treat them as missing |
 
-The artifact contains a shared genotype/callability mask and, for SNPs, the subset
-with at least one usable ARG orientation plus the full posterior orientation
-probability. Use this same artifact for A and B. Here lowercase $m=20$ is the number
+The artifact contains a shared genotype/callability mask and the subset of rows
+with at least one usable ARG orientation, plus each row's full posterior orientation
+probability. TE and SNP targets and the control universe all use that orientable
+subset, because Phi-SFS polarizes every site from the ARG. Use this same artifact
+for A and B. Here lowercase $m=20$ is the number
 of individuals used by the SFS projection; uppercase $M$ below is the number of sites
 in each compared set.
 
@@ -225,74 +227,10 @@ redundant when A is a subset of `ALL_TE_POSITIONS`.
 The justification for the production resolution threshold belongs in the validation
 record, not in this how-to.
 
-### 5. Build the preliminary TE target
+### 5. Build the target and match controls
 
-The preliminary target supplies the ordered TE rows needed to build the polarity
-mask. It is not the target used for matching.
-
-```bash
-python -m normalize_tes.te_age_target \
-  --store "$STORE" \
-  --te-positions "$TE_POSITIONS" \
-  --output "$PRELIM_TARGET" \
-  --a-type TE \
-  --scratch-dir "${TMPDIR:?TMPDIR is not set}" \
-  --bootstrap-replicates 10000 \
-  --acceptance-quantile 0.50 \
-  --seed 1002
-```
-
-| flag | purpose |
-|---|---|
-| `--store` | interval store supplying TE ages |
-| `--te-positions` | TE category to resolve and summarize |
-| `--output` | new preliminary target directory |
-| `--a-type` | focal type; `TE` here because this preliminary target feeds the TE polarity mask |
-| `--scratch-dir` | node-local location for the temporary TE-by-age CDF matrix |
-| `--bootstrap-replicates` | TE resamples used to calibrate the matching threshold |
-| `--acceptance-quantile` | bootstrap-distance quantile used as that threshold |
-| `--seed` | bootstrap random seed |
-
-Keep this directory: the polarity mask records the target it was built against. This
-preliminary target intentionally precedes VCF eligibility so the polarity mask covers
-the complete resolved TE list. The final target applies both filters before fixing
-$M$.
-
-Sizing note: an unmasked target streams its TE-by-age CDF through `--scratch-dir`,
-so scratch is the constraint. A masked target (step 7) does not — it builds the
-whole CDF block in memory — so there `--mem` is the constraint, and the run prints
-its projected peak before building. Measured resource figures are in
-[BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
-
-### 6. Build the TE polarity mask
-
-Record which posterior draws polarize each TE in agreement with TE presence being
-derived. The later threshold retains a TE when at least 50% of its usable ARG draws
-support insertion presence as derived, including an exact 50% tie:
-
-```bash
-python -m normalize_tes.build_te_polarity_mask \
-  --store "$STORE" \
-  --target "$PRELIM_TARGET" \
-  --output "$POLARITY_MASK" \
-  --absence-allele A \
-  "$POSTERIOR_DIR"/*.tsz
-```
-
-| flag | purpose |
-|---|---|
-| `--store` | store that defines row and draw IDs |
-| `--target` | preliminary target supplying the ordered TE rows |
-| `--output` | new category-specific mask directory |
-| `--absence-allele` | allele encoding TE absence; default `A` |
-| `trees` | every source draw recorded by the store |
-
-Pass the complete draw set. Partial masks are rejected by target construction.
-
-### 7. Build the final target and match controls
-
-Build a new target from agreeing draws, discard TEs above the production flipped-draw
-threshold, and construct the matched control sets:
+Build the focal target from all posterior draws and construct the matched control
+sets:
 
 ```bash
 python -m normalize_tes.te_age_target \
@@ -302,8 +240,6 @@ python -m normalize_tes.te_age_target \
   --scratch-dir "${TMPDIR:?TMPDIR is not set}" \
   --a-type "$A_TYPE" \
   --vcf-eligibility "$ELIGIBILITY" \
-  --te-polarity-mask "$POLARITY_MASK" \
-  --max-flipped-fraction 0.5 \
   --bootstrap-replicates 10000 \
   --acceptance-quantile 0.50 \
   --seed 1002
@@ -322,21 +258,30 @@ python -m normalize_tes.bootstrap_target_matcher \
   --seed 1002
 ```
 
-Final-target additions:
+Target flags:
 
 | flag | purpose |
 |---|---|
-| `--te-polarity-mask` | use only agreeing posterior draws for each TE age CDF |
-| `--max-flipped-fraction` | discard a TE only when its flipped fraction exceeds this value; `0.5` retains exact ties |
+| `--store` | interval store supplying focal-site ages |
+| `--te-positions` | focal positions to resolve and summarize (TE or SNP, per `--a-type`) |
+| `--output` | new target directory |
+| `--scratch-dir` | node-local location for the temporary site-by-age CDF matrix |
 | `--a-type` | focal dataset type, `TE` or `SNP` |
-| `--vcf-eligibility` | apply the appropriate TE or SNP eligibility rows before fixing $M$ |
+| `--vcf-eligibility` | keep only callable, ARG-orientable rows before fixing $M$ |
+| `--bootstrap-replicates` | focal-site resamples used to calibrate the matching threshold |
+| `--acceptance-quantile` | bootstrap-distance quantile used as that threshold |
+| `--seed` | bootstrap random seed |
+
+Sizing note: the target streams its site-by-age CDF through `--scratch-dir`, so
+scratch is the constraint. Measured resource figures are in
+[BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
 
 Matcher flags:
 
 | flag | purpose |
 |---|---|
 | `--store` | store supplying candidate SNP ages |
-| `--target` | final masked target |
+| `--target` | focal target built above |
 | `-A`, `--a-type` | focal type, `TE` or `SNP`; must agree with the target metadata |
 | `--candidate-rows` | TE-excluded control universe and its provenance sidecar |
 | `--output` | new matched-control bundle |
@@ -347,28 +292,28 @@ Matcher flags:
 | `--disjoint-replicates` | prevent reuse of a control SNP between published sets |
 | `--seed` | matching random seed |
 
-The preliminary and final TE targets must use different directories. Keep `WORK_DIR`
-on durable storage and repeat the identical command after preemption. Disjoint mode
-preflights the necessary pool size: at least `replicates` times $M$ eligible candidates
-must exist. It then removes every published control from later candidate pools. If the
-pool cannot support all sets, the run fails; it never falls back to reuse.
+Keep `WORK_DIR` on durable storage and repeat the identical command after
+preemption. Disjoint mode preflights the necessary pool size: at least `replicates`
+times $M$ eligible candidates must exist. It then removes every published control
+from later candidate pools. If the pool cannot support all sets, the run fails; it
+never falls back to reuse.
 
-The matcher treats `-A` as an analysis constraint, not merely a label. `-A TE`
-requires a final target built with the TE polarity mask and
-`--max-flipped-fraction 0.5`, so an exact 50% derived-support tie is retained and a
-site with no usable orientation draws is not. `-A SNP` requires the SNP-orientable
-eligibility path and rejects a target carrying the TE polarity filter. In both cases,
-the shared eligibility filter must have been applied before $M$ and the focal-age CDF
-were fixed. SNP frequency flipping remains part of SFS construction; the age matcher
-does not use allele frequency and remains SFS-blind.
+A TE target is built exactly as a SNP target is: ages from all usable posterior
+draws, no filter on ARG polarity, and the same orientable eligibility rows. The
+matcher and Phi-SFS refuse a target built with `--te-polarity-mask` or
+`--max-flipped-fraction`, for either type. Those options, and
+`normalize_tes.build_te_polarity_mask`, remain only as diagnostics: the
+at-least-50%-derived filter and agreeing-draw ages conditioned A alone on ARG
+polarity, which no SNP control set shared (see
+[Polarity](#polarity-a-single-posterior-rule)). In both cases the shared
+eligibility filter must have been applied before $M$ and the focal-age CDF were
+fixed. The age matcher does not use allele frequency and remains SFS-blind.
 
-For a SNP focal set, build `TARGET` directly with `--a-type SNP`,
-`--te-positions "$A_POSITIONS"`, and `--vcf-eligibility "$ELIGIBILITY"`; omit
-`--te-polarity-mask` and `--max-flipped-fraction`. Despite the historical flag and
-array names, those positions define A. A SNP uses the same eligibility and posterior
-orientation rule as B, and its rows must already have been excluded from `CANDIDATES`.
+For a SNP focal set, set `A_TYPE=SNP`. Despite the historical flag and array
+names, `--te-positions` then defines the SNP focal set A, whose rows must already
+have been excluded from `CANDIDATES`.
 
-### 8. Calculate Phi-SFS
+### 6. Calculate Phi-SFS
 
 Calculate the unfolded SFS comparison for focal set A and every matched B set:
 
@@ -381,7 +326,6 @@ python -m normalize_tes.phi_sfs \
   -A "$A_TYPE" \
   -B "$B_TYPE" \
   --reference-seed 1002 \
-  --polarity-imputation-seed 2001 \
   --min-null-replicates 900 \
   --output "$PHI"
 ```
@@ -389,17 +333,17 @@ python -m normalize_tes.phi_sfs \
 | flag | purpose |
 |---|---|
 | `--target` | final focal A target |
-| `--matches` | matched-control bundle from step 7 |
+| `--matches` | matched-control bundle from step 5 |
 | `--vcf` | filtered genome-wide biallelic VCF covering all requested sites |
-| `--ancestral-table` | store-aligned posterior ancestral-state table |
+| `--ancestral-table` | store-aligned posterior ancestral-state table; orients every TE and SNP |
 | `-A`, `--a-type` | focal type: `TE` (default) or `SNP` |
 | `-B`, `--b-type` | control type; currently `SNP` only |
 | `--reference-seed` | seed, combined with the target digest, for drawing $B_0$ uniformly from the QC-passing sets; default 1002 |
 | `--reference-replicate` | optional explicit $B_0$ replicate ID, overriding the draw |
 | `--min-null-replicates` | floor on $R$: every QC-passing non-reference set is a null, and the run fails if fewer than this pass; default 900 |
 | `--reference-sensitivity` | optionally repeat calibration with $N$ alternative references, the next $N$ sets of the same seeded permutation; default 0 |
-| `--asymmetric-polarity-null`, `--no-asymmetric-polarity-null` | use the Bernoulli-$q$ asymmetric calibration described below; enabled by default. The negative form reproduces the legacy mixture-versus-mixture null and is retained only for comparison |
-| `--polarity-imputation-seed` | seed for reproducible, coordinate-keyed Bernoulli-$q$ hard orientations; default 2001 |
+| `--asymmetric-polarity-null`, `--no-asymmetric-polarity-null` | hard-orient A and every null by one Bernoulli-$q$ draw per site, keeping $B_0$ a mixture; off by default, when A, $B_0$ and every null are posterior mixtures |
+| `--polarity-imputation-seed` | seed for the coordinate-keyed Bernoulli-$q$ orientations; used only with `--asymmetric-polarity-null`; default 2001 |
 | `--output` | new Phi-SFS result directory |
 
 The default rejects heterozygous calls. Use `--heterozygous missing` only when the
@@ -419,12 +363,13 @@ becomes a null in that rerun) and publishes
 match bundle's `reuse_row_indices.npy`/`reuse_counts.npy` (empty for A; all 1 in a
 valid disjoint bundle).
 
-With the default asymmetric design enabled, PhiTE additionally writes
+With `--asymmetric-polarity-null`, PhiTE additionally writes
 `b_bernoulli_q_raw_sfs.npy`, `b_bernoulli_q_normalized_sfs.npy`, and
 `b_bernoulli_q_cdf.npy`. `metadata.json` records `null_polarity_design`,
 `asymmetric_polarity_null`, `polarity_imputation_seed`,
 `polarity_imputation_algorithm`, and the separate A, B-reference, and null-left
-polarity rules.
+polarity rules, and `te_sites_polarized`, `te_usable_arg_draws`, and
+`te_unusable_arg_draws` for the focal TEs.
 
 #### Wasserstein definition
 
@@ -454,74 +399,80 @@ an excess of rare or high-frequency derived alleles.
 
 ![Schematic definition of Phi-SFS as the area between focal and neutral SFS cumulative distribution functions](figures/phi_sfs_definition_schematic.png)
 
-#### Polarity and the asymmetric null
+#### Polarity: a single posterior rule
 
-Polarity is type-specific because the two variant classes contain different prior
-information. For a TE, insertion presence is known biologically to have originated
-as the derived state. The upstream at-least-50% filter does not infer which TE allele
-was originally derived; it removes presence/absence patterns inconsistent with a
-well-supported single insertion, including patterns potentially affected by
-subsequent deletion, recurrent movement, or other homoplasy. A retained TE therefore
-contributes a hard insertion-derived spectrum.
-
-SNPs do not have an equivalent known derived allele. For each SNP, let $p$ be the
+Every site, TE or SNP, focal or control, is polarized the same way. Let $p$ be the
 observed ALT frequency and let
 
 $$
 q=P(\mathrm{ALT\ is\ derived}\mid\mathrm{usable\ ARG\ draws})
 $$
 
-be the fraction of usable ARG draws in which ALT is derived. The mixture-polarized
-SNP contribution is
+be the fraction of usable ARG draws in which ALT is derived. The site contributes
+the posterior mixture of its two orientations,
 
 $$
 q\,h(k,n)+(1-q)\,h(n-k,n).
 $$
 
-All $q\in[0,1]$ are retained: there is no SNP `q > 0.5` filter. ARG draws that cannot
-orient either observed allele are reported as unusable rather than counted toward
-either direction.
+All $q\in[0,1]$ are retained, and there is no polarity filter. ARG draws that cannot
+orient either observed allele are reported as unusable, not counted toward either
+direction. A TE is an ACGT-coded site in the ARGs like any other, so the same
+ancestral table gives its $q$. Where the ARG calls absence derived, the TE
+contributes at the absence frequency, just as a SNP whose REF is derived contributes
+at $1-p$.
 
-The production calibration is asymmetric because the observed TE comparison is
-itself asymmetric:
+TE presence is known biologically to be the derived state for a true single
+insertion, and earlier designs used that: a TE contributed a hard insertion-derived
+spectrum, TEs with less than 50% derived support were discarded, and TE ages came
+from agreeing draws only. That made the observed comparison differ in construction
+from every null comparison. A had true hard polarity, while the nulls carried the
+ARG's posterior polarity, so any miscalibration of $q$ entered
+$\Phi_{\mathrm{obs}}$ and no $\Phi_i^0$
+([review 12](docs/CODE_REVIEW_ROUND12.md), findings 1 and 3). In the dnAging
+simulations, where every site is neutral, that construction rejected far above the
+nominal rate once the ARG was inferred without ancestral information. The table
+gives rejection fractions at $\alpha=0.05$, with 150 tests per cell, from
+`results/sim_dnaging_unpolarised/arms_v1/summary.csv`:
+
+| focal construction (nulls Bernoulli-$q$, $B_0$ mixture) | $M=250$ | $M=1000$ | $M=4000$ |
+|---|---|---|---|
+| true polarity everywhere (oracle) | 0.09 | 0.05 | 0.09 |
+| A true-hard, no filter, true ages | 0.24 | 0.44 | 0.83 |
+| A true-hard, filtered, agreeing-draw ages, inferred ages (former production) | 0.27 | 0.75 | 0.97 |
+| A Bernoulli-$q$, like the nulls | 0.09 | 0.10 | 0.07 |
+
+The reference-haplotype replicates (`results/sim_dnaging_refhap/arms_v1/`) show the
+same pattern. Treating A like the nulls removes the excess, so the production
+design now treats TEs as SNPs are treated. The cost is that biological knowledge of
+TE polarity is not used. The test asks whether TE sites differ from age-matched SNPs
+as both are seen through the ARG, not what the TE's true spectrum is, and signal is
+probably attenuated where the ARG mis-polarizes TEs.
+
+**Default: posterior mixture throughout.** A, $B_0$ and every null set $B_i$ are
+posterior mixtures:
 
 $$
-\Phi_{\mathrm{obs}}
-=\Phi_{\mathrm{SFS}}(A_{\mathrm{TE,hard}},B_{0,\mathrm{mixture}}).
+\Phi_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A_{\mathrm{mix}},B_{0,\mathrm{mix}}),
+\qquad
+\Phi_i^0=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{mix}},B_{0,\mathrm{mix}}).
 $$
 
-For every non-reference control set $B_i$, PhiTE constructs a hard SNP spectrum by
-drawing one orientation per SNP from $\operatorname{Bernoulli}(q)$. ALT is declared
-derived when a reproducible coordinate-keyed uniform variate is less than $q$;
-otherwise REF is declared derived. The null distances are
+Because $E[h(\mathrm{DAF})]=q\,h(k,n)+(1-q)\,h(n-k,n)$, a Bernoulli-$q$ hard spectrum
+is the mixture plus imputation noise that carries no information about the data.
+The mixture avoids that noise and has no dependence on an imputation seed. This
+all-mixture design has **not yet** been validated in simulation. The simulation row
+above uses Bernoulli-$q$ A and nulls with true ages, not mixtures with inferred ages.
 
-$$
-\Phi_i^0
-=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{Bernoulli}(q)\ hard},
-                     B_{0,\mathrm{mixture}}).
-$$
-
-This null reproduces the hard-versus-uncertain polarity architecture of the observed
-comparison. It does not claim that SNP polarity is known. Instead, each hard
-orientation is one posterior imputation of the unknown SNP state. Its expected
-projected contribution is the original SNP mixture:
-
-$$
-E[h(\mathrm{DAF})]=q\,h(k,n)+(1-q)\,h(n-k,n).
-$$
-
-The imputation is keyed by the polarity seed, chromosome, and position using
-`sha256(phi-sfs-bernoulli-q-v1, seed, chromosome, position)`. It is therefore
-reproducible and assigns a SNP the same orientation wherever that coordinate is used.
-Production results therefore condition on a single `--polarity-imputation-seed`;
-their sensitivity across seeds is not yet reported.
-For `-A SNP`, focal $A$ receives the same Bernoulli-$q$ hard treatment; this is the
-SNP negative-control design used to estimate type-I behavior.
-
-The legacy `--no-asymmetric-polarity-null` mode instead compares mixture-polarized
-$B_i$ with mixture-polarized $B_0$. It does not reproduce the observed
-hard-versus-mixture polarity architecture and is not the intended production
-analysis.
+**Option: Bernoulli-$q$ hard orientation.** With `--asymmetric-polarity-null`, A and
+every $B_i$ are hard-oriented by one Bernoulli-$q$ draw per site, and $B_0$ stays a
+mixture:
+$\Phi_i^0=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{Bernoulli}(q)},B_{0,\mathrm{mix}})$.
+ALT is declared derived when a reproducible coordinate-keyed uniform variate is less
+than $q$, keyed by
+`sha256(phi-sfs-bernoulli-q-v1, seed, chromosome, position)`, so a site receives the
+same orientation wherever it is used. Results then condition on one
+`--polarity-imputation-seed`.
 
 #### Null calibration, Z-scores, and P-values
 
@@ -540,16 +491,14 @@ sampling floor separately for every focal category rather than comparing raw
    $A$-versus-$B_0$ comparison is exchangeable with the $B_i$-versus-$B_0$
    comparisons; that remains an open validation item
    ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 7). All sets use the shared samples,
-   callability, and data-quality rules, with the type-specific polarity rules above.
+   callability, and data-quality rules, with the single polarity rule above.
 2. Keep $B_0$ mixture-polarized and calculate the observed distance
-   $\Phi_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A_{\mathrm{hard}},
-   B_{0,\mathrm{mixture}})$.
-3. Hard-orient each non-reference $B_i$ with one coordinate-keyed
-   Bernoulli-$q$ draw per SNP and calculate
-   $\Phi_i^0=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{Bernoulli}(q)\ hard},
-   B_{0,\mathrm{mixture}})$, for $i=1,\ldots,R$. Here $\Phi_i^0$ is a raw
-   Φ-SFS distance between two neutral SNP sets under the asymmetric polarity
-   design, not a Z-score.
+   $\Phi_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A,B_{0,\mathrm{mixture}})$, with A
+   polarized as the nulls are.
+3. Calculate $\Phi_i^0=\Phi_{\mathrm{SFS}}(B_i,B_{0,\mathrm{mixture}})$ for
+   $i=1,\ldots,R$, with each $B_i$ a posterior mixture by default, or
+   Bernoulli-$q$ hard-oriented under `--asymmetric-polarity-null`. Here $\Phi_i^0$
+   is a raw Φ-SFS distance between two neutral SNP sets, not a Z-score.
 4. Let $μ_0$ and $s_0$ be the mean and sample standard deviation of the
    $\Phi_i^0$. Report the standardized test statistic
 
@@ -618,9 +567,11 @@ matching-and-polarity pipeline has a precisely estimated 7% type-I error rate. I
 machine-readable provenance is in
 `results/phi_sfs/snp_type1_asymmetric_100/summary.json`.
 
-The pilot's focal sets and nulls share the same Bernoulli-$q$ construction, so it
-tests the SNP path only. It cannot validate TE hard polarity, the TE polarity filter,
-or the agreeing-draw TE ages ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 2).
+The pilot used the Bernoulli-$q$ design, not the current all-mixture default, and
+SNP focal sets only. TE focal sets now share the SNP polarity and age construction,
+so the pilot no longer misses a TE-specific polarity path. It still cannot test
+properties specific to TE sites, such as TE genotyping error or how the ARG handles
+TE sites ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 2).
 
 For a formal contrast between categories 1 and 2, `normalize_tes.phi_contrast` uses
 $\Delta_{\mathrm{obs}}=Z_{A_1}-Z_{A_2}$. Because the two categories' null sets share
@@ -643,7 +594,7 @@ The focal A set is observed once and remains fixed. Small or unusual focal sets 
 therefore yield unstable results even after null calibration. Always report $M$,
 the raw distance, null mean and standard deviation, Z-score, Monte Carlo P-value,
 replicate count, and matching diagnostics. Results use the
-`phi-sfs-wasserstein-v2` schema and cannot be silently combined with older Phi-SFS
+`phi-sfs-wasserstein-v3` schema and cannot be silently combined with older Phi-SFS
 outputs. The implementation design is recorded in
 [PHI_SFS_WASSERSTEIN_CODING_PLAN.md](docs/PHI_SFS_WASSERSTEIN_CODING_PLAN.md).
 
@@ -653,29 +604,22 @@ Submit launchers with `sbatch` from the repository checkout. The launchers activ
 the conda environment themselves. `$TMPDIR` is node-local scratch; matcher
 `WORK_DIR` must remain on Quobyte or other durable storage.
 
-Build the polarity mask after the preliminary target exists:
-
-```bash
-sbatch --export=ALL,STORE="$STORE",TARGET="$PRELIM_TARGET",OUTPUT="$POLARITY_MASK" \
-  slurm/run_te_polarity_mask.sbatch
-```
-
-Build the final masked target and match controls:
+Build the target and match controls:
 
 ```bash
 sbatch --export=ALL,STORE="$STORE",TARGET="$TARGET",A_POSITIONS="$A_POSITIONS",\
 OUTPUT="$MATCHES",CANDIDATE_ROWS="$CANDIDATES",WORK_DIR="$WORK_DIR",\
 VCF_ELIGIBILITY="$VCF_ELIGIBILITY",A_TYPE="$A_TYPE",\
-TE_POLARITY_MASK="$POLARITY_MASK",MAX_FLIPPED_FRACTION=0.5,\
 REPLICATES=1001,RESTARTS=3,SEED=1002,SCRATCH_HEADROOM_GB=32 \
   slurm/run_bootstrap_matching.sbatch
 ```
 
-The launcher passes the A type and shared eligibility artifact when constructing a
-missing target. When `TARGET` already exists, it verifies the recorded A type,
-eligibility artifact, TE mask when applicable, and flipped-fraction threshold. It
-also rejects an unrestricted candidate universe and verifies that the candidate
-provenance names the same eligibility artifact.
+The launcher builds a missing target from `A_POSITIONS` with the A type and shared
+eligibility artifact. When `TARGET` already exists, it verifies the recorded A type
+and eligibility artifact and refuses a target built with the TE polarity mask. It
+exits if `TE_POLARITY_MASK` or `MAX_FLIPPED_FRACTION` is set. It also rejects an
+unrestricted candidate universe and verifies that the candidate provenance names the
+same eligibility artifact.
 
 Build the ancestral table as an array and merge it after every array task succeeds:
 
@@ -699,9 +643,9 @@ ANCESTRAL="$ANCESTRAL",OUTPUT="$PHI",A_TYPE="$A_TYPE",B_TYPE=SNP \
 
 This runs either TE-versus-SNP or SNP-versus-SNP according to `A_TYPE`; `B_TYPE`
 is currently constrained to `SNP`, matching the command-line interface. The launcher
-defaults to `ASYMMETRIC_POLARITY_NULL=true` and
-`POLARITY_IMPUTATION_SEED=2001`. Set `ASYMMETRIC_POLARITY_NULL=false` only to
-reproduce the legacy symmetric-mixture analysis.
+defaults to `ASYMMETRIC_POLARITY_NULL=false`, the all-mixture design. Set
+`ASYMMETRIC_POLARITY_NULL=true` (with `POLARITY_IMPUTATION_SEED`, default 2001) for
+the Bernoulli-$q$ option.
 
 Scheduler allocations, measured resource use, scratch sizing, and parameter evidence
 are recorded in [BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
@@ -709,14 +653,14 @@ are recorded in [BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
 ### Submit many TE categories
 
 The store, candidate universe, and ancestral table are shared across categories.
-Give every category its own preliminary target, polarity mask, final target, matched
-bundle, durable work directory, and seed. First create a tab-separated manifest:
+Give every category its own target, matched bundle, durable work directory, and
+seed. First create a tab-separated manifest:
 
 ```text
-label	positions	prelim_target	polarity_mask	target	matches	work_dir	seed
-all_te	/quobyte/project/te/all.pos.txt	/quobyte/project/targets/all_te_prelim	/quobyte/project/polarity_masks/all_te	/quobyte/project/targets/all_te	/quobyte/project/matches/all_te	/quobyte/project/work/all_te	1001
-in_gene	/quobyte/project/te/in_gene.pos.txt	/quobyte/project/targets/in_gene_prelim	/quobyte/project/polarity_masks/in_gene	/quobyte/project/targets/in_gene	/quobyte/project/matches/in_gene	/quobyte/project/work/in_gene	1002
-young	/quobyte/project/te/young.pos.txt	/quobyte/project/targets/young_prelim	/quobyte/project/polarity_masks/young	/quobyte/project/targets/young	/quobyte/project/matches/young	/quobyte/project/work/young	1003
+label	positions	target	matches	work_dir	seed
+all_te	/quobyte/project/te/all.pos.txt	/quobyte/project/targets/all_te	/quobyte/project/matches/all_te	/quobyte/project/work/all_te	1001
+in_gene	/quobyte/project/te/in_gene.pos.txt	/quobyte/project/targets/in_gene	/quobyte/project/matches/in_gene	/quobyte/project/work/in_gene	1002
+young	/quobyte/project/te/young.pos.txt	/quobyte/project/targets/young	/quobyte/project/matches/young	/quobyte/project/work/young	1003
 ```
 
 The manifest rules are:
@@ -724,14 +668,12 @@ The manifest rules are:
 - the first line is the header shown above;
 - fields are separated by literal tabs and paths must not contain tabs, newlines, or
   commas;
-- every `prelim_target` must already have been built from that row's `positions`;
-- every other category-specific path must be unique; mask, target, and match paths
-  must not exist on a first submission;
+- every category-specific path must be unique; target and match paths must not
+  exist on a first submission;
 - `work_dir` is durable and may be reused only to resume the identical matching run;
 - seeds should be fixed before submission and remain unchanged on resubmission.
 
-Set the shared inputs, then submit one mask job and one dependent target/matching job
-per manifest row:
+Set the shared inputs, then submit one target/matching job per manifest row:
 
 ```bash
 PROJECT=/quobyte/project/PhiTE
@@ -740,40 +682,28 @@ CANDIDATES=/quobyte/project/data/candidate_rows.npy
 VCF_ELIGIBILITY=/quobyte/project/data/vcf_eligibility
 MANIFEST=/quobyte/project/manifests/te_categories.tsv
 
-while IFS=$'\t' read -r label positions prelim mask target matches work seed; do
+while IFS=$'\t' read -r label positions target matches work seed; do
   [[ "$label" == label ]] && continue
   [[ -n "$label" ]] || continue
 
-  mask_job=$(sbatch --parsable \
-    --job-name="mask-${label}" \
-    --export=ALL,PROJECT="$PROJECT",STORE="$STORE",TARGET="$prelim",OUTPUT="$mask" \
-    slurm/run_te_polarity_mask.sbatch)
-  mask_job=${mask_job%%;*}
-
   match_job=$(sbatch --parsable \
     --job-name="match-${label}" \
-    --dependency="afterok:${mask_job}" \
     --export=ALL,PROJECT="$PROJECT",STORE="$STORE",TARGET="$target",\
 A_POSITIONS="$positions",A_TYPE=TE,OUTPUT="$matches",CANDIDATE_ROWS="$CANDIDATES",\
-VCF_ELIGIBILITY="$VCF_ELIGIBILITY",\
-WORK_DIR="$work",TE_POLARITY_MASK="$mask",MAX_FLIPPED_FRACTION=0.5,\
+VCF_ELIGIBILITY="$VCF_ELIGIBILITY",WORK_DIR="$work",\
 REPLICATES=1001,RESTARTS=3,SEED="$seed",SCRATCH_HEADROOM_GB=32 \
     slurm/run_bootstrap_matching.sbatch)
   match_job=${match_job%%;*}
 
-  printf '%s\tmask=%s\tmatch=%s\n' "$label" "$mask_job" "$match_job"
+  printf '%s\tmatch=%s\n' "$label" "$match_job"
 done < "$MANIFEST"
 ```
 
-The categories run concurrently, while each matching job waits for its own mask. Save
-the printed job IDs. Check the mask jobs before trusting the dependent runs, and use
-`squeue`, `sacct`, and the scheduler logs to confirm that every manifest row completed.
-
-This loop intentionally does not rebuild preliminary targets: no current production
-launcher performs a target-only run. Build those targets first using step 5 in
-scheduled compute allocations. It also does not silently skip existing masks or
-outputs; for a partial rerun, submit only the missing categories or resubmit an
-interrupted matcher with its original target, output, work directory, and seed.
+The categories run concurrently. Save the printed job IDs and use `squeue`,
+`sacct`, and the scheduler logs to confirm that every manifest row completed. The
+loop does not silently skip existing outputs; for a partial rerun, submit only the
+missing categories or resubmit an interrupted matcher with its original target,
+output, work directory, and seed.
 
 ## Verify a production run
 
@@ -783,15 +713,15 @@ Before accepting the results:
    non-null input identities in `metadata.json`.
 2. Confirm the candidate-row report meets the requested resolution threshold and is
    bound to `STORE` and the intended VCF eligibility artifact.
-3. Confirm the final target records `POLARITY_MASK`, the intended
-   `max_flipped_fraction`, inclusive at 0.5, the eligibility artifact, and plausible
-   kept/discarded counts. For SNP A, confirm `a_type=SNP` and no TE mask.
+3. Confirm the target records the intended `a_type`, the eligibility artifact, and
+   plausible kept/removed counts, and records no `te_polarity` mask.
 4. Confirm the matcher published 1001 identically generated sets in disjoint mode,
    maximum control reuse is one, every overlap with $B_0$ is zero, and all sets used
    in Phi-SFS pass matching QC.
-5. Confirm the `phi-sfs-wasserstein-v2` result records the intended A/B types,
-   `null_polarity_design=bernoulli-q-hard-vs-posterior-mixture`, polarity-imputation
-   seed and algorithm, exactly equal site count $M$, reference replicate, null count,
+5. Confirm the `phi-sfs-wasserstein-v3` result records the intended A/B types,
+   `null_polarity_design=posterior-mixture-vs-posterior-mixture` (or, for the
+   Bernoulli option, `bernoulli-q-hard-vs-posterior-mixture` with its seed and
+   algorithm), identical A and null-left polarity rules, exactly equal site count $M$, reference replicate, null count,
    raw distance, null mean and sample SD, Z-score, exceedances, and add-one P-value.
 
 The exact acceptance criteria and the tests supporting them are in
@@ -803,19 +733,19 @@ The exact acceptance criteria and the tests supporting them are in
 |---|---|
 | `age_interval_store/` | reusable posterior age intervals and store identity |
 | `ancestral_states/` | posterior ancestral-base counts for store rows |
-| `vcf_eligibility/` | shared callable rows plus SNP posterior-orientation eligibility |
+| `vcf_eligibility/` | shared callable rows plus the ARG-orientable subset and its posterior orientation |
 | `candidate_rows.npy` plus `.json` | store-bound, eligibility-filtered control universe excluding known TEs and A |
-| `targets/CATEGORY_prelim/` | ordered TE rows used to construct the polarity mask |
-| `te_polarity_masks/CATEGORY/` | per-TE, per-draw polarity agreement mask |
-| `targets/CATEGORY/` | final masked TE age target and acceptance threshold |
+| `targets/CATEGORY/` | focal age target, from all posterior draws, and acceptance threshold |
 | `bootstrap_matches/CATEGORY/` | disjoint $B_0,\ldots,B_R$ sets, bootstrap targets, restart traces, reuse checks, and QC |
 | `phi_sfs/CATEGORY/` | A/B spectra and CDFs, Wasserstein distances, null Z-scores, summary tables, and provenance |
 
 Outputs are published atomically and are never overwritten. The Phi-SFS output schema
-is `phi-sfs-wasserstein-v2`; its generic `a_*` and `b_*` arrays support both TE-SNP
-and SNP-SNP analyses, and its Bernoulli-$q$ arrays record the hard null-left spectra.
-Version 1 used the legacy symmetric-mixture null and must not be silently combined
-with version 2. Matched-control sets are Monte Carlo null replicates, not independent
+is `phi-sfs-wasserstein-v3`; its generic `a_*` and `b_*` arrays support both TE-SNP
+and SNP-SNP analyses, and under `--asymmetric-polarity-null` its Bernoulli-$q$ arrays
+record the hard null-left spectra. Version 3 polarizes TEs from the ARG posterior;
+version 2 gave TEs hard biological polarity after a derived-support filter, and
+version 1 used the earlier symmetric-mixture null. None may be silently combined
+with another. Matched-control sets are Monte Carlo null replicates, not independent
 biological samples; see the validation report for the correct interpretation of
 their spread.
 
