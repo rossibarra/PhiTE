@@ -43,18 +43,26 @@ orig_singer="$SIM_ROOT/singer/$rep"
 orig_argtest="$SIM_ROOT/argtest/$rep"
 singer="$OUT_ROOT/singer/$rep"
 argtest="$OUT_ROOT/argtest/$rep"
-if [[ -e "$singer/output" || -e "$argtest/out" ]]; then
+# A fresh submission refuses existing output. A job that Slurm requeued after
+# preemption (SLURM_RESTART_COUNT > 0, e.g. on the `low` partition) resumes its
+# own partial run instead: snakemake --rerun-incomplete picks up where it stopped.
+restart="${SLURM_RESTART_COUNT:-0}"
+if [[ "$restart" == 0 && ( -e "$singer/output" || -e "$argtest/out" ) ]]; then
     echo "$rep: output already exists under $OUT_ROOT; refusing to overwrite" >&2
     exit 4
 fi
+[[ "$restart" == 0 ]] || echo "$rep: requeued (restart $restart); resuming"
 
 # --- SINGER, unpolarised --------------------------------------------------
 mkdir -p "$singer/input"
 for f in "$orig_singer"/input/*; do
     if [[ -n "$REFERENCE_SEED" && "$(basename "$f")" == chr1.vcf.gz ]]; then continue; fi
-    ln -s "$f" "$singer/input/$(basename "$f")"
+    ln -sfn "$f" "$singer/input/$(basename "$f")"
 done
 if [[ -n "$REFERENCE_SEED" ]]; then
+    # The relabelled VCF is written in place, so a preempted write may be
+    # partial; regenerate it (deterministically, from the same seed) on resume.
+    rm -f "$singer/input/chr1.vcf.gz" "$singer/input/chr1.reference.json"
     . "$PROJECT/slurm/slurm_conda_bootstrap.sh"
     python -m tools.reference_haplotype_vcf \
         --vcf "$orig_singer/input/chr1.vcf.gz" \
@@ -84,11 +92,11 @@ conda deactivate
 # --- argtest post-processing ----------------------------------------------
 mkdir -p "$argtest/input/chr1"
 for f in "$singer"/output/chr1/trees/*.tsz; do
-    ln -s "$f" "$argtest/input/chr1/$(basename "$f")"
+    ln -sfn "$f" "$argtest/input/chr1/$(basename "$f")"
 done
-ln -s "$singer/output/chr1/chr1.mut_rate.p" "$argtest/input/chr1/chr1.mut_rate.p"
+ln -sfn "$singer/output/chr1/chr1.mut_rate.p" "$argtest/input/chr1/chr1.mut_rate.p"
 cp "$orig_argtest/input/all.hapmap.tsv" "$orig_argtest/input/sim.fai" "$argtest/input/"
-ln -s "$ARGTEST_REPO/scripts" "$argtest/scripts"
+ln -sfn "$ARGTEST_REPO/scripts" "$argtest/scripts"
 sed -e "s#^root_dir:.*#root_dir: $argtest/input#" \
     -e "s#^hapmap:.*#hapmap: $argtest/input/all.hapmap.tsv#" \
     -e "s#^fai:.*#fai: $argtest/input/sim.fai#" \
