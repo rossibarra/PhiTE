@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### TEs polarized by the ARG posterior; all-mixture null by default
+
+- TE sites are now polarized from the ARG ancestral table exactly as SNPs are.
+  A TE contributes the posterior mixture of its two orientations, and where the
+  ARG calls absence derived it counts at the absence frequency. Biological hard
+  TE polarity, the at-least-50%-derived TE filter, and agreeing-draw TE ages are
+  removed from the production path.
+- Reason: in the neutral dnAging simulations with an ARG inferred without
+  ancestral information, the former TE construction (true-hard A, filter,
+  agreeing-draw ages) rejected 97% of tests at M=4000 (alpha=0.05). A
+  Bernoulli-q A built like the nulls rejected 7%. See the README Polarity
+  section.
+- The Phi-SFS default is now `posterior-mixture-vs-posterior-mixture`: A, B0
+  and every null are q-mixtures. `--asymmetric-polarity-null` is opt-in and
+  hard-orients A (TE or SNP) and every null-left set by the coordinate-keyed
+  Bernoulli(q) draw, keeping B0 a mixture. The Farm launcher defaults to
+  `ASYMMETRIC_POLARITY_NULL=false`. The all-mixture design has not yet been
+  validated in simulation.
+- The matcher and Phi-SFS refuse any target built with `--te-polarity-mask` or
+  `--max-flipped-fraction`, for either A type. The matcher also refuses a
+  target carrying `te_keep_draws.npy`. `run_bootstrap_matching.sbatch` exits if
+  `TE_POLARITY_MASK` or `MAX_FLIPPED_FRACTION` is set. The mask builder and
+  target options remain as diagnostics only.
+- VCF eligibility returns the ARG-orientable subset for TE targets as for SNP
+  targets, so a TE that no draw orients cannot enter A.
+- Phi-SFS output is now `phi-sfs-wasserstein-v3`, and `phi_contrast` requires
+  v3. Existing masked targets, their matches, and v2 results must be rebuilt.
+
 ## v0.9.0-rc1 — 2026-09-27
 
 This release candidate changes the production Phi-SFS null to reproduce the

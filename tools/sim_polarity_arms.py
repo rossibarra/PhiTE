@@ -30,6 +30,19 @@ only in polarity. production_inferred/te_filter_only/te_full share A before
 filtering. Bernoulli orientations use PhiTE's coordinate-keyed draw, so a site
 has one orientation wherever it is used, as in production.
 
+The production-validation extension adds posterior-mixture A, B0 and nulls under
+both true- and inferred-age matching.  For each age definition it compares:
+
+  * reusable controls, independently drawn for each bootstrap target; and
+  * sequentially depleted controls, where every accepted control is removed
+    before the next bootstrap target is matched.
+
+The latter is a deliberately lightweight, binned analogue of the production
+matcher.  It tests whether disjoint sequential depletion alone creates order
+effects or invalid P-values; it does not claim to reproduce the production
+greedy CDF optimizer.  Simulation replicates, not repeated focal draws within a
+replicate, are the independent units used for uncertainty summaries.
+
 Outputs (new directory): tests.csv, summary.csv, q_calibration.csv,
 age_error.csv, filter_by_count.csv, run.json.
 """
@@ -39,6 +52,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import hashlib
 import json
 import math
 import time
@@ -61,7 +75,13 @@ BASES = "ACGT"
 CHROM = "chr1"
 TRUE_AGE_ARMS = ("oracle", "production", "snp_pilot")
 INFERRED_ARMS = ("production_inferred", "te_filter_only", "te_full")
-ARMS = TRUE_AGE_ARMS + INFERRED_ARMS
+MIXTURE_ARMS = (
+    "mixture_true_reuse",
+    "mixture_true_depleted",
+    "mixture_inferred_reuse",
+    "mixture_inferred_depleted",
+)
+ARMS = TRUE_AGE_ARMS + INFERRED_ARMS + MIXTURE_ARMS
 COUNT_BINS = ((1, 1), (2, 2), (3, 4), (5, 8), (9, 13), (14, 18), (19, 22), (23, 25))
 
 
@@ -223,6 +243,75 @@ def matched_sets(focal_bins: np.ndarray, pool: np.ndarray, pool_bins: np.ndarray
     return np.concatenate(columns, axis=1)
 
 
+def bootstrap_matched_sets(
+    focal: np.ndarray,
+    pool: np.ndarray,
+    site_bins: np.ndarray,
+    n_sets: int,
+    rng: np.random.Generator,
+    n_bins: int,
+    *,
+    disjoint: bool,
+    target_counts: np.ndarray | None = None,
+) -> np.ndarray:
+    """Match bootstrap-bin targets, optionally depleting controls sequentially.
+
+    Each set gets an iid bootstrap of the focal sites and therefore its own bin
+    quota, as each production control set gets its own bootstrap age target.
+    Sampling is without replacement within a set.  With ``disjoint=False`` the
+    same pool is restored for every set; with ``disjoint=True`` every selected
+    site is removed before the next target is drawn.  If depletion makes the
+    next target infeasible, the completed prefix is returned.
+    """
+    focal = np.asarray(focal, dtype=np.int64)
+    available = np.asarray(pool, dtype=np.int64).copy()
+    bins = np.asarray(site_bins, dtype=np.int64)
+    if focal.ndim != 1 or available.ndim != 1 or bins.ndim != 1:
+        raise ValueError("focal, pool and site bins must be one-dimensional")
+    if focal.size == 0 or n_sets <= 0 or n_bins <= 0:
+        raise ValueError("focal set, set count and bin count must be positive")
+    if np.intersect1d(focal, available).size:
+        raise ValueError("focal sites must be excluded from the control pool")
+
+    if target_counts is not None:
+        targets = np.asarray(target_counts, dtype=np.int64)
+        if targets.shape != (n_sets, n_bins) or np.any(targets < 0):
+            raise ValueError("target counts must have shape (n_sets, n_bins)")
+        if np.any(targets.sum(axis=1) != focal.size):
+            raise ValueError("every target count vector must sum to focal size")
+    else:
+        targets = np.stack([
+            np.bincount(
+                bins[rng.choice(focal, size=focal.size, replace=True)],
+                minlength=n_bins,
+            )
+            for _ in range(n_sets)
+        ])
+
+    completed: list[np.ndarray] = []
+    for want in targets:
+        source = available if disjoint else np.asarray(pool, dtype=np.int64)
+        chosen: list[np.ndarray] = []
+        feasible = True
+        for bin_index in np.flatnonzero(want):
+            members = source[bins[source] == bin_index]
+            count = int(want[bin_index])
+            if members.size < count:
+                feasible = False
+                break
+            chosen.append(rng.choice(members, size=count, replace=False))
+        if not feasible:
+            break
+        selected = np.concatenate(chosen)
+        rng.shuffle(selected)
+        completed.append(selected)
+        if disjoint:
+            available = available[~np.isin(available, selected)]
+    if not completed:
+        return np.empty((0, focal.size), dtype=np.int64)
+    return np.stack(completed)
+
+
 def true_age_w1(a: np.ndarray, b: np.ndarray, age: np.ndarray) -> float:
     """W1 (generations) between the true ages of two equal-size sets."""
     return float(np.mean(np.abs(np.sort(age[a]) - np.sort(age[b]))))
@@ -252,7 +341,83 @@ POLARITY = {
     "production_inferred": {"a": "true", "b0": "mixture", "null": "bernoulli"},
     "te_filter_only": {"a": "true", "b0": "mixture", "null": "bernoulli"},
     "te_full": {"a": "true", "b0": "mixture", "null": "bernoulli"},
+    "mixture_true_reuse": {"a": "mixture", "b0": "mixture", "null": "mixture"},
+    "mixture_true_depleted": {"a": "mixture", "b0": "mixture", "null": "mixture"},
+    "mixture_inferred_reuse": {"a": "mixture", "b0": "mixture", "null": "mixture"},
+    "mixture_inferred_depleted": {
+        "a": "mixture", "b0": "mixture", "null": "mixture",
+    },
 }
+
+
+def collection_diagnostics(
+    spectra: np.ndarray,
+    a: np.ndarray,
+    controls: np.ndarray,
+) -> tuple[float, float, int]:
+    """Return depletion-order diagnostics and maximum control reuse."""
+    a_spec = normalize(spectra[a].sum(axis=0))
+    control_spec = normalize(spectra[controls].sum(axis=1))
+    distances = phi_many(a_spec, control_spec)
+    if distances.size < 2:
+        slope = math.nan
+        early_late = math.nan
+    else:
+        scaled_order = np.linspace(0.0, 1.0, distances.size)
+        slope = float(np.polyfit(scaled_order, distances, 1)[0])
+        width = max(1, distances.size // 4)
+        early_late = float(distances[-width:].mean() - distances[:width].mean())
+    _, reuse = np.unique(controls, return_counts=True)
+    return slope, early_late, int(reuse.max())
+
+
+def run_mixture_design(
+    *,
+    arm: str,
+    spectra: dict[str, np.ndarray],
+    ages: np.ndarray,
+    bins: np.ndarray,
+    a: np.ndarray,
+    everyone: np.ndarray,
+    target_counts: np.ndarray,
+    args: argparse.Namespace,
+    rng: np.random.Generator,
+) -> dict:
+    """Run one all-mixture calibration with reusable or depleted controls."""
+    disjoint = arm.endswith("_depleted")
+    pool = np.setdiff1d(everyone, a, assume_unique=True)
+    controls = bootstrap_matched_sets(
+        a, pool, bins, args.mixture_sets, rng, args.n_bins,
+        disjoint=disjoint, target_counts=target_counts,
+    )
+    if controls.shape[0] < args.min_mixture_sets:
+        return {
+            "status": "depleted_short" if disjoint else "bin_short",
+            "control_sets": int(controls.shape[0]),
+            "null_replicates": max(0, int(controls.shape[0]) - 1),
+        }
+    # Mirror Phi-SFS: choose B0 uniformly and SFS-blind from the completed sets.
+    reference = int(rng.integers(controls.shape[0]))
+    b0 = controls[reference]
+    nulls = np.delete(controls, reference, axis=0)
+    slope, early_late, maximum_reuse = collection_diagnostics(
+        spectra["mixture"], a, controls,
+    )
+    minimum_nulls_for_alpha = max(2, math.ceil(1.0 / args.alpha) - 1)
+    return {
+        "status": (
+            "ok" if nulls.shape[0] >= minimum_nulls_for_alpha
+            else "diagnostic_only_coarse_p"
+        ),
+        "control_sets": int(controls.shape[0]),
+        "null_replicates": int(nulls.shape[0]),
+        "reference_set_order": reference,
+        "maximum_control_reuse": maximum_reuse,
+        "order_phi_slope": slope,
+        "late_minus_early_phi": early_late,
+        "true_age_w1_a_b0": true_age_w1(a, b0, ages),
+        **run_test(POLARITY[arm], spectra, a, b0, nulls),
+    }
 
 
 def replicate_tests(data: dict, args: argparse.Namespace, rng: np.random.Generator,
@@ -322,17 +487,69 @@ def replicate_tests(data: dict, args: argparse.Namespace, rng: np.random.Generat
                 rows.append({**row, "status": "ok",
                              "true_age_w1_a_b0": true_age_w1(focal, b0, data["true_age"]),
                              **run_test(POLARITY[arm], spectra, focal, b0, nulls)})
+
+            # Current production estimand: all three roles are posterior
+            # mixtures.  Reuse isolates calibration of that estimand; depletion
+            # changes only control-set sampling, so their difference diagnoses
+            # the exchangeability concern without a category contrast.
+            for age_label, age_values, bin_values in (
+                ("true", data["true_age"], true_bins),
+                ("inferred", data["true_age"], all_bins),
+            ):
+                target_seed = hashlib.sha256(
+                    f"{args.seed}\0{data['label']}\0{m}\0{t}\0{age_label}\0targets".encode()
+                ).digest()
+                target_rng = np.random.default_rng(
+                    int.from_bytes(target_seed[:8], "little")
+                )
+                target_counts = np.stack([
+                    np.bincount(
+                        bin_values[target_rng.choice(a, size=m, replace=True)],
+                        minlength=args.n_bins,
+                    )
+                    for _ in range(args.mixture_sets)
+                ])
+                for design in ("reuse", "depleted"):
+                    arm = f"mixture_{age_label}_{design}"
+                    design_seed = hashlib.sha256(
+                        f"{args.seed}\0{data['label']}\0{m}\0{t}\0{arm}".encode()
+                    ).digest()
+                    result = run_mixture_design(
+                        arm=arm,
+                        spectra=spectra,
+                        ages=age_values,
+                        bins=bin_values,
+                        a=a,
+                        everyone=everyone,
+                        target_counts=target_counts,
+                        args=args,
+                        rng=np.random.default_rng(
+                            int.from_bytes(design_seed[:8], "little")
+                        ),
+                    )
+                    rows.append({
+                        **base,
+                        "arm": arm,
+                        "M_eff": m,
+                        **result,
+                    })
             for row in rows:
                 writer.writerow(row)
 
 
-def wilson(k: int, n: int, z: float = 1.959963984540054) -> tuple[float, float]:
-    if n == 0:
-        return (math.nan, math.nan)
-    p = k / n
-    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
-    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
-    return (centre - half, centre + half)
+def replicate_bootstrap_interval(
+    rates: np.ndarray,
+    *,
+    seed: int,
+    draws: int = 20_000,
+) -> tuple[float, float]:
+    """Percentile interval resampling independent simulation replicates."""
+    values = np.asarray(rates, dtype=np.float64)
+    if values.ndim != 1 or values.size == 0 or not np.all(np.isfinite(values)):
+        raise ValueError("replicate rates must be a nonempty finite vector")
+    rng = np.random.default_rng(seed)
+    sampled = rng.choice(values, size=(draws, values.size), replace=True).mean(axis=1)
+    return tuple(np.quantile(sampled, [0.025, 0.975]).tolist())
 
 
 def summarize(tests_path: Path, alpha: float) -> list[dict]:
@@ -352,16 +569,34 @@ def summarize(tests_path: Path, alpha: float) -> list[dict]:
             for r in group:
                 by_rep.setdefault(r["replicate"], []).append(float(r["p"]) <= alpha)
             rep_rates = [float(np.mean(v)) for v in by_rep.values()]
-            lo, hi = wilson(reject, p.size)
+            digest = hashlib.sha256(f"{arm}\0{m}\0replicate-ci".encode()).digest()
+            lo, hi = replicate_bootstrap_interval(
+                np.asarray(rep_rates), seed=int.from_bytes(digest[:8], "little"),
+            )
             out.append({
                 "arm": arm, "M": m, "tests": int(p.size),
+                "independent_replicates": len(rep_rates),
                 "median_M_eff": float(np.median([int(r["M_eff"]) for r in group])),
                 "rejections": reject, "rejection_rate": reject / p.size,
-                "wilson_lo": lo, "wilson_hi": hi,
+                "mean_replicate_rejection_rate": float(np.mean(rep_rates)),
+                "replicate_bootstrap_lo": lo, "replicate_bootstrap_hi": hi,
+                "replicate_rate_sd": (
+                    float(np.std(rep_rates, ddof=1)) if len(rep_rates) > 1 else math.nan
+                ),
                 "replicate_rate_min": min(rep_rates), "replicate_rate_max": max(rep_rates),
                 "mean_z": float(z.mean()), "mean_phi_excess": float(excess.mean()),
                 "median_true_age_w1": float(np.median(
                     [float(r["true_age_w1_a_b0"]) for r in group])),
+                "mean_order_phi_slope": float(np.nanmean([
+                    float(r["order_phi_slope"]) for r in group
+                    if r.get("order_phi_slope") not in (None, "")
+                ])) if any(r.get("order_phi_slope") not in (None, "") for r in group)
+                else math.nan,
+                "mean_late_minus_early_phi": float(np.nanmean([
+                    float(r["late_minus_early_phi"]) for r in group
+                    if r.get("late_minus_early_phi") not in (None, "")
+                ])) if any(r.get("late_minus_early_phi") not in (None, "") for r in group)
+                else math.nan,
             })
     return out
 
@@ -408,6 +643,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--sizes", type=int, nargs="+", default=[250, 1000, 4000])
     p.add_argument("--tests", type=int, default=50, help="focal sets per replicate and M")
     p.add_argument("--nulls", type=int, default=199, help="null sets per test (R)")
+    p.add_argument(
+        "--mixture-sets", type=int, default=80,
+        help="requested all-mixture control sets including B0 (default: 80)",
+    )
+    p.add_argument(
+        "--min-mixture-sets", type=int, default=3,
+        help="minimum completed all-mixture sets including B0 (default: 3)",
+    )
     p.add_argument("--n-bins", type=int, default=20, help="log-age quantile bins")
     p.add_argument("--polarity-seed", type=int, default=2001)
     p.add_argument("--seed", type=int, default=20260927)
@@ -417,13 +660,26 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if not 0.0 < args.alpha < 1.0:
+        raise SystemExit("--alpha must lie strictly between zero and one")
+    if args.mixture_sets < 3:
+        raise SystemExit("--mixture-sets must be at least 3")
+    if not 3 <= args.min_mixture_sets <= args.mixture_sets:
+        raise SystemExit(
+            "--min-mixture-sets must be at least 3 and no larger than --mixture-sets"
+        )
     if args.output.exists():
         raise SystemExit(f"output already exists: {args.output}")
     args.output.mkdir(parents=True)
     started = time.time()
     rng = np.random.default_rng(args.seed)
-    fields = ["replicate", "M", "test", "arm", "M_eff", "status", "true_age_w1_a_b0",
-              "phi_obs", "null_mean", "null_sd", "z", "p", "mean_daf_difference"]
+    fields = [
+        "replicate", "M", "test", "arm", "M_eff", "status",
+        "control_sets", "null_replicates", "reference_set_order",
+        "maximum_control_reuse", "order_phi_slope", "late_minus_early_phi",
+        "true_age_w1_a_b0", "phi_obs", "null_mean", "null_sd", "z", "p",
+        "mean_daf_difference",
+    ]
     inputs, q_rows, age_rows, filter_rows = {}, [], [], []
     tests_path = args.output / "tests.csv"
     with tests_path.open("w", newline="") as handle:
@@ -450,11 +706,19 @@ def main(argv=None) -> int:
     write_csv(args.output / "filter_by_count.csv", filter_rows)
     (args.output / "run.json").write_text(json.dumps({
         "arguments": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
-        "polarity": POLARITY, "inputs": inputs, "elapsed_seconds": time.time() - started,
+        "polarity": POLARITY,
+        "independent_unit": "simulation replicate",
+        "repeated_tests_role": "within-replicate Monte Carlo precision only",
+        "depletion_design": (
+            "sequential binned matching to iid focal-site bootstrap targets; "
+            "selected controls removed before the next set"
+        ),
+        "inputs": inputs, "elapsed_seconds": time.time() - started,
     }, indent=2) + "\n")
     for row in summary:
         print(f"{row['arm']:<20} M={row['M']:<5} tests={row['tests']:<4} "
-              f"reject={row['rejection_rate']:.3f} [{row['wilson_lo']:.3f},{row['wilson_hi']:.3f}] "
+              f"reject={row['mean_replicate_rejection_rate']:.3f} "
+              f"[{row['replicate_bootstrap_lo']:.3f},{row['replicate_bootstrap_hi']:.3f}] "
               f"mean_z={row['mean_z']:+.2f}", flush=True)
     return 0
 

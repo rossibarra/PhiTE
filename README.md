@@ -492,6 +492,10 @@ sampling floor separately for every focal category rather than comparing raw
    comparisons; that remains an open validation item
    ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 7). All sets use the shared samples,
    callability, and data-quality rules, with the single polarity rule above.
+   The focal-age bootstrap resamples sites iid. This adopts the Poisson-random-field
+   approximation that local LD averages out for genome-wide control pools containing
+   millions of SNPs; local linkage is therefore a documented assumption, not a current
+   production blocker. Revisit it for spatially restricted or strongly clustered sets.
 2. Keep $B_0$ mixture-polarized and calculate the observed distance
    $\Phi_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A,B_{0,\mathrm{mixture}})$, with A
    polarized as the nulls are.
@@ -573,22 +577,46 @@ so the pilot no longer misses a TE-specific polarity path. It still cannot test
 properties specific to TE sites, such as TE genotyping error or how the ARG handles
 TE sites ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 2).
 
-For a formal contrast between categories 1 and 2, `normalize_tes.phi_contrast` uses
-$\Delta_{\mathrm{obs}}=Z_{A_1}-Z_{A_2}$. Because the two categories' null sets share
-no replicate identity, it pairs their standardized null Z-scores by random
-permutation: with $R=\min(R_1,R_2)$, it takes $R$ entries of category 1's null
-vector in random order ($\pi$) and pairs them with $R$ entries of category 2's
-($\sigma$, a random subset when $R_2>R$), so
-$\Delta_i^0=Z_{1,\pi(i)}^0-Z_{2,\sigma(i)}^0$ for $i=1,\ldots,R$. It reports the
-two-sided add-one P-value
-$\bigl(1+\#\{i:|\Delta_i^0|\ge|\Delta_{\mathrm{obs}}|\}\bigr)/(R+1)$.
-The pairing is seeded from `--seed` and the two category labels; repeat 0 is the
-reported result, and `--pairing-repeats` independent pairings give a P-value
-sensitivity range. This treats the two categories as independent. It ignores any
-covariance between nested or overlapping categories (for example, in-gene TEs
-versus all TEs), which share focal sites, so for them the contrast is not known to
-be calibrated ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 5). A visual difference
-between two points is not by itself a formal between-category test.
+**Between-category contrasts are not currently supported.** The repository retains
+`normalize_tes.phi_contrast` as experimental code, but its random pairing of category
+nulls has not been validated and ignores covariance between nested or overlapping
+categories. Do not interpret its P-values or use it in the production workflow.
+For now, report each category's Phi-SFS result and uncertainty separately. A visual
+difference between two points is not a formal between-category test.
+
+#### All-mixture and depletion simulation
+
+`tools/sim_polarity_arms.py` directly tests the current all-mixture estimand. For
+both true and inferred ages it compares independently reusable controls with
+sequentially depleted, globally disjoint controls. Every control set receives its
+own iid bootstrap of the focal ages; the depleted arm removes selected controls
+before matching the next bootstrap target and draws $B_0$ uniformly from the
+completed sets. The simulator reports type-I error, Phi-SFS drift with control-set
+order, the late-minus-early distance shift, matching error, and maximum reuse.
+
+The depleted sampler is a binned diagnostic, not the production greedy CDF
+optimizer. Its purpose is to determine whether the all-mixture statistic is
+calibrated in this controlled setting and whether sequential depletion alone creates
+an order effect. Simulation replicates are the independent units for uncertainty;
+repeated focal draws within one replicate provide Monte Carlo precision but are not
+counted as independent biological replicates. Cells with too few nulls to attain the
+requested alpha are recorded as diagnostic-only and excluded from rejection-rate
+summaries.
+
+Run the full ten-replicate validation on a compute node. The simulator is not
+checkpointed, so this forces Farm's non-preemptible `high` partition rather than
+risk restarting an eight-hour `low` job from the beginning:
+
+```bash
+HPC_LOW=high HPC_HIGH=high HPC_CPUS=1 HPC_MEM=16G HPC_TIME=08:00:00 \
+  ~/.claude/bin/hpc_run \
+  'python -m tools.sim_polarity_arms \
+    --prep-root results/sim_dnaging \
+    --output results/sim_dnaging/all_mixture_depletion_v1 \
+    --replicates 1 2 3 4 5 6 7 8 9 10 \
+    --sizes 250 1000 4000 \
+    --tests 50 --nulls 199 --mixture-sets 80'
+```
 
 The focal A set is observed once and remains fixed. Small or unusual focal sets can
 therefore yield unstable results even after null calibration. Always report $M$,
