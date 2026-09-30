@@ -46,7 +46,10 @@ argtest="$OUT_ROOT/argtest/$rep"
 # A fresh submission refuses existing output. A job that Slurm requeued after
 # preemption (SLURM_RESTART_COUNT > 0, e.g. on the `low` partition) resumes its
 # own partial run instead: snakemake --rerun-incomplete picks up where it stopped.
+# RESUME=1 does the same for a manual resubmission of a task that died that way.
+# A resumed run first clears the lock the killed snakemake left behind.
 restart="${SLURM_RESTART_COUNT:-0}"
+if [[ "${RESUME:-0}" == 1 && "$restart" == 0 ]]; then restart=manual; fi
 if [[ "$restart" == 0 && ( -e "$singer/output" || -e "$argtest/out" ) ]]; then
     echo "$rep: output already exists under $OUT_ROOT; refusing to overwrite" >&2
     exit 4
@@ -81,6 +84,10 @@ diff "$orig_singer/config.yaml" "$singer/config.yaml" || true
 module load conda
 conda activate singer-snakemake-env
 echo "=== SINGER $rep ==="; date
+if [[ "$restart" != 0 ]]; then
+    snakemake --snakefile "$SINGER_REPO/workflow/Snakefile" --directory "$singer" \
+        --configfile "$singer/config.yaml" --unlock
+fi
 snakemake \
     --snakefile "$SINGER_REPO/workflow/Snakefile" \
     --directory "$singer" \
@@ -107,6 +114,10 @@ diff "$orig_argtest/config.yaml" "$argtest/config.yaml" || true
 
 conda activate argtest
 echo "=== argtest $rep ==="; date
+if [[ "$restart" != 0 && -d "$argtest/.snakemake" ]]; then
+    snakemake --snakefile "$ARGTEST_REPO/Snakefile" --directory "$argtest" \
+        --configfile "$argtest/config.yaml" --unlock
+fi
 snakemake \
     --snakefile "$ARGTEST_REPO/Snakefile" \
     --directory "$argtest" \
