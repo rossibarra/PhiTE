@@ -318,10 +318,17 @@ def scan_vcf(
 def load_ancestral_table(
     table_dir: Path, store: object
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Authenticate and load the ARG ancestral-state counts for SNP q."""
+    """Authenticate and load the ARG ancestral-state counts for site q."""
+    # Imported here: build_ancestral_states imports this module's digest helper.
+    from .build_ancestral_states import SCHEMA_VERSION as ANCESTRAL_SCHEMA_VERSION
+    from .build_ancestral_states import verify_table_arrays
+
     metadata = json.loads((table_dir / "metadata.json").read_text(encoding="utf-8"))
-    if metadata.get("schema_version") != "ancestral-state-counts-v1":
-        raise SystemExit(f"{table_dir}: unsupported ancestral-table schema")
+    if metadata.get("schema_version") != ANCESTRAL_SCHEMA_VERSION:
+        raise SystemExit(
+            f"{table_dir}: unsupported ancestral-table schema "
+            f"{metadata.get('schema_version')!r}; expected {ANCESTRAL_SCHEMA_VERSION!r}"
+        )
     if not metadata.get("complete"):
         raise SystemExit(f"{table_dir}: ancestral table is incomplete")
     if metadata.get("bases") != ["A", "C", "G", "T"]:
@@ -340,6 +347,10 @@ def load_ancestral_table(
         raise SystemExit(f"{table_dir}: ancestral_counts.npy has invalid shape or dtype")
     if present.shape != (n_rows,) or present.dtype.kind != "u":
         raise SystemExit(f"{table_dir}: present_draw_count.npy has invalid shape or dtype")
+    try:
+        verify_table_arrays(table_dir, metadata, counts, present)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     if np.any(counts.sum(axis=1, dtype=np.uint64) > present):
         raise SystemExit(f"{table_dir}: ancestral counts exceed present-draw counts")
     return counts, present, metadata

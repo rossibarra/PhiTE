@@ -47,6 +47,7 @@
 #   REFERENCE_REPLICATE  B0 replicate ID; unset draws B0 at random   (unset)
 #   REFERENCE_SEED   seed for the B0 draw, with the target digest   (1002)
 #   MIN_NULL_REPLICATES  floor on R, the number of QC-passing nulls    (900)
+#   MAX_NULL_REPLICATES  fix R at exactly N nulls from the seeded order  (unset)
 #   ASYMMETRIC_POLARITY_NULL  true for Bernoulli-q left vs mixture B0 (false)
 #   POLARITY_IMPUTATION_SEED  coordinate-keyed Bernoulli-q seed         (2001)
 #   HETEROZYGOUS  error|missing for diploid calls                 (error)
@@ -71,11 +72,20 @@ B_TYPE="${B_TYPE:-SNP}"
 REFERENCE_REPLICATE="${REFERENCE_REPLICATE:-}"
 REFERENCE_SEED="${REFERENCE_SEED:-1002}"
 MIN_NULL_REPLICATES="${MIN_NULL_REPLICATES:-900}"
+MAX_NULL_REPLICATES="${MAX_NULL_REPLICATES:-}"
 ASYMMETRIC_POLARITY_NULL="${ASYMMETRIC_POLARITY_NULL:-false}"
 POLARITY_IMPUTATION_SEED="${POLARITY_IMPUTATION_SEED:-2001}"
 reference_option=()
 if [[ -n "$REFERENCE_REPLICATE" ]]; then
     reference_option=(--reference-replicate "$REFERENCE_REPLICATE")
+fi
+null_cap_option=()
+if [[ -n "$MAX_NULL_REPLICATES" ]]; then
+    if [[ ! "$MAX_NULL_REPLICATES" =~ ^[0-9]+$ ]]; then
+        echo "MAX_NULL_REPLICATES must be a positive integer" >&2
+        exit 1
+    fi
+    null_cap_option=(--max-null-replicates "$MAX_NULL_REPLICATES")
 fi
 case "$ASYMMETRIC_POLARITY_NULL" in
     true)
@@ -124,6 +134,7 @@ python -m normalize_tes.phi_sfs \
     -B "$B_TYPE" \
     "${polarity_option[@]}" \
     "${reference_option[@]}" \
+    "${null_cap_option[@]}" \
     --reference-seed "$REFERENCE_SEED" \
     --min-null-replicates "$MIN_NULL_REPLICATES" \
     --heterozygous "$HETEROZYGOUS"

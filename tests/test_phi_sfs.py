@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from ancestral_table_helpers import stamp_ancestral_table
 from normalize_tes import phi_sfs as phi_sfs_module
 from normalize_tes.phi_sfs import (
     ASYMMETRIC_NULL_DESIGN,
@@ -481,17 +482,17 @@ def _ancestral_table(tmp_path, positions=(10, 20, 30, 40, 50, 60, 70, 80)):
     np.save(table / "present_draw_count.npy",
             np.full(len(positions), 75, dtype=np.uint16))
     (table / "metadata.json").write_text(json.dumps({
-        "schema_version": "ancestral-state-counts-v1",
         "bases": ["A", "C", "G", "T"],
         "store": str(store),
         "store_content_sha256": "store",   # matches the bundle fixture's digest
         "store_rows": len(positions),
         "complete": True,
     }), encoding="utf-8")
-    return table
+    return stamp_ancestral_table(table)
 
 
-def _run(target, matches, vcf, output, *extra, sync_identity=True, reference=0):
+def _run(target, matches, vcf, output, *extra, sync_identity=True, reference=0,
+         restamp_table=True):
     """Run the CLI with a floor of 2 nulls.
 
     Hand-calculated tests fix B0 at replicate 0 through `reference`; pass
@@ -508,6 +509,10 @@ def _run(target, matches, vcf, output, *extra, sync_identity=True, reference=0):
         argv += ["--reference-replicate", str(reference)]
     if "--ancestral-table" not in argv:
         argv += ["--ancestral-table", str(_ancestral_table(Path(output).parent))]
+    if restamp_table:
+        # Tests edit the table's arrays after building it; re-record their
+        # digests unless the test is exercising the digest check itself.
+        stamp_ancestral_table(Path(argv[argv.index("--ancestral-table") + 1]))
     return main(argv)
 
 
@@ -1574,3 +1579,109 @@ def test_vcf_digest_mismatch_is_rejected(tmp_path):
         ValueError, match="the VCF differs from the one that defined eligibility"
     ):
         _run(target, matches, other_vcf, tmp_path / "phi", sync_identity=False)
+
+
+# ------------------------------------------------- ancestral-table integrity
+
+
+def test_ancestral_table_whose_array_was_changed_is_rejected(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text(_vcf_text(), encoding="utf-8")
+    table = _ancestral_table(tmp_path)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[3, 2] = 1           # one extra G-ancestral call: a plausible corruption
+    np.save(table / "ancestral_counts.npy", counts)
+    with pytest.raises(ValueError, match="does not match its recorded digest"):
+        _run(target, matches, vcf, tmp_path / "phi",
+             "--ancestral-table", str(table), restamp_table=False)
+
+
+def test_ancestral_table_without_digests_is_rejected(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text(_vcf_text(), encoding="utf-8")
+    table = _ancestral_table(tmp_path)
+    metadata = json.loads((table / "metadata.json").read_text())
+    metadata["schema_version"] = "ancestral-state-counts-v1"
+    del metadata["array_sha256"]
+    (table / "metadata.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="expected 'ancestral-state-counts-v2'"):
+        _run(target, matches, vcf, tmp_path / "phi",
+             "--ancestral-table", str(table), restamp_table=False)
+
+
+def test_ancestral_table_digests_are_recorded_in_output(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text(_vcf_text(), encoding="utf-8")
+    table = _ancestral_table(tmp_path)
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    metadata = json.loads((output / "metadata.json").read_text())
+    recorded = json.loads((table / "metadata.json").read_text())["array_sha256"]
+    assert metadata["ancestral_table_array_sha256"] == recorded
+
+
+# ------------------------------------------------------ fixed null count
+
+
+def _four_set_bundle(tmp_path):
+    """Bundle with four matched sets, so a cap of 2 leaves one set unused."""
+    target, matches = _write_bundle(
+        tmp_path,
+        positions=np.array([[30, 40], [50, 60], [70, 80], [90, 100]]),
+        row_indices=np.array([[2, 3], [4, 5], [6, 7], [8, 9]], dtype=np.int64),
+    )
+    header, body = _vcf_text().split("\n", 2)[:2], _vcf_text().split("\n", 2)[2]
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text("\n".join(header) + "\n" + body
+                   + _record(90, 5) + "\n" + _record(100, 9) + "\n", encoding="utf-8")
+    table = _ancestral_table(tmp_path, positions=tuple(range(10, 101, 10)))
+    return target, matches, vcf, table
+
+
+def test_max_null_replicates_takes_next_n_of_the_seeded_permutation(tmp_path):
+    target, matches, vcf, table = _four_set_bundle(tmp_path)
+    capped = tmp_path / "capped"
+    assert _run(target, matches, vcf, capped, "--ancestral-table", str(table),
+                "--max-null-replicates", "2", reference=None) == 0
+    full = tmp_path / "full"
+    assert _run(target, matches, vcf, full, "--ancestral-table", str(table),
+                reference=None) == 0
+    capped_meta = json.loads((capped / "metadata.json").read_text())
+    full_meta = json.loads((full / "metadata.json").read_text())
+
+    # Same seeded permutation, so the same B0 with or without the cap.
+    assert capped_meta["reference_replicate_id"] == full_meta["reference_replicate_id"]
+    selected = capped_meta["selected_null_replicate_ids"]
+    unused = capped_meta["unused_qc_passing_replicate_ids"]
+    assert len(selected) == 2 and len(unused) == 1
+    assert capped_meta["accepted_null_replicates"] == 2
+    assert capped_meta["qc_passing_sets"] == 4
+    assert capped_meta["max_null_replicates"] == 2
+    assert sorted(selected + unused + [capped_meta["reference_replicate_id"]]) == [0, 1, 2, 3]
+    assert np.load(capped / "null_replicate_id.npy").tolist() == selected
+    assert full_meta["max_null_replicates"] is None
+    assert full_meta["unused_qc_passing_replicate_ids"] == []
+    assert len(full_meta["selected_null_replicate_ids"]) == 3
+
+
+def test_max_null_replicates_fails_when_too_few_sets_pass_qc(tmp_path):
+    target, matches, vcf, table = _four_set_bundle(tmp_path)
+    np.save(matches / "qc_pass.npy", np.array([True, True, False, True]))
+    with pytest.raises(ValueError, match="requires 4"):
+        _run(target, matches, vcf, tmp_path / "phi", "--ancestral-table", str(table),
+             "--max-null-replicates", "3", reference=None)
+
+
+@pytest.mark.parametrize("extra, message", [
+    (("--reference-replicate", "1"), "--reference-replicate"),
+    (("--reference-sensitivity", "1"), "--reference-sensitivity"),
+    (("--min-null-replicates", "3"), "cannot exceed"),
+])
+def test_max_null_replicates_refuses_conflicting_options(tmp_path, extra, message):
+    target, matches, vcf, table = _four_set_bundle(tmp_path)
+    with pytest.raises(ValueError, match=message):
+        _run(target, matches, vcf, tmp_path / "phi", "--ancestral-table", str(table),
+             "--max-null-replicates", "2", *extra, reference=None)

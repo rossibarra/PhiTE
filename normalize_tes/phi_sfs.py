@@ -43,6 +43,8 @@ from typing import NamedTuple, Sequence
 
 import numpy as np
 
+from .build_ancestral_states import SCHEMA_VERSION as ANCESTRAL_SCHEMA_VERSION
+from .build_ancestral_states import verify_table_arrays
 from .release_provenance import software_provenance
 from .sample_age_matched_controls import _load_target, _sha256_arrays
 from .vcf_io import (  # noqa: F401 -- re-exported for existing callers
@@ -819,6 +821,19 @@ def calculate(args: argparse.Namespace) -> None:
         raise ValueError("--min-null-replicates must be at least 2 for a Z-score")
     if args.reference_sensitivity < 0:
         raise ValueError("--reference-sensitivity must be nonnegative")
+    capped = args.max_null_replicates is not None
+    if capped:
+        if args.max_null_replicates < 2:
+            raise ValueError("--max-null-replicates must be at least 2 for a Z-score")
+        if args.min_null_replicates > args.max_null_replicates:
+            raise ValueError("--min-null-replicates cannot exceed --max-null-replicates")
+        # A capped run defines B0 as the first set of the seeded permutation and
+        # the nulls as the next N; a named reference or alternative references
+        # would each need their own rule, so neither is combined with a cap.
+        if args.reference_replicate is not None:
+            raise ValueError("--max-null-replicates cannot be combined with --reference-replicate")
+        if args.reference_sensitivity:
+            raise ValueError("--max-null-replicates cannot be combined with --reference-sensitivity")
     target_meta, match_meta, target_digest = _validate_provenance(args.target, args.matches)
     _validate_target_authority(target_meta, match_meta, args.a_type)
     vcf_eligibility_identity = _validate_vcf_identity(
@@ -886,11 +901,25 @@ def calculate(args: argparse.Namespace) -> None:
         reference_rule = "prespecified --reference-replicate"
     alternatives = order[order != reference_source_index]
 
-    # The nulls are every QC-passing set other than B0, so R is whatever the
-    # matcher delivered, subject to a floor fixed before the run. QC is
-    # computed from age matching alone, so this choice never looks at an SFS.
-    # The add-one P-value (1 + exceedances) / (R + 1) is valid for any such R.
-    null_source_indices = passing[passing != reference_source_index]
+    # By default the nulls are every QC-passing set other than B0, so R is
+    # whatever the matcher delivered, subject to a floor fixed before the run.
+    # With --max-null-replicates N they are instead the next N sets of the same
+    # seeded permutation, which fixes R so that (R + 1) * alpha can be an
+    # integer and the nominal test has exact attainable size. QC is computed
+    # from age matching alone, so neither choice ever looks at an SFS. The
+    # add-one P-value (1 + exceedances) / (R + 1) is valid for any such R.
+    if capped:
+        if order.size < args.max_null_replicates + 1:
+            raise ValueError(
+                f"only {int(order.size)} matched sets pass QC; "
+                f"--max-null-replicates {args.max_null_replicates} requires "
+                f"{args.max_null_replicates + 1} (B0 plus the nulls)"
+            )
+        null_source_indices = order[1:args.max_null_replicates + 1]
+        unused_source_indices = order[args.max_null_replicates + 1:]
+    else:
+        null_source_indices = passing[passing != reference_source_index]
+        unused_source_indices = order[:0]
     null_count = int(null_source_indices.size)
     if null_count < args.min_null_replicates:
         raise ValueError(
@@ -1018,8 +1047,13 @@ def calculate(args: argparse.Namespace) -> None:
     )
     table = Path(args.ancestral_table)
     store_meta = json.loads((table / "metadata.json").read_text(encoding="utf-8"))
-    if store_meta.get("schema_version") != "ancestral-state-counts-v1":
-        raise ValueError(f"unexpected ancestral table schema in {table}")
+    if store_meta.get("schema_version") != ANCESTRAL_SCHEMA_VERSION:
+        raise ValueError(
+            f"ancestral table at {table} has schema "
+            f"{store_meta.get('schema_version')!r}, expected "
+            f"{ANCESTRAL_SCHEMA_VERSION!r}; rebuild it with the current "
+            "normalize_tes.build_ancestral_states"
+        )
     if list(store_meta.get("bases", [])) != ["A", "C", "G", "T"]:
         raise ValueError(
             f"ancestral table declares bases {store_meta.get('bases')!r}; the "
@@ -1079,12 +1113,16 @@ def calculate(args: argparse.Namespace) -> None:
         )
     present_counts = _checked_table_array(
         table / "present_draw_count.npy", (store_positions.size,))
+    ancestral_counts = _checked_table_array(
+        table / "ancestral_counts.npy", (store_positions.size, 4))
+    # Every site's polarity is read from these arrays, so bind their content to
+    # the metadata before trusting either.
+    verify_table_arrays(table, store_meta, ancestral_counts, present_counts)
     polarity = PolarityResolver(
         set(te_coordinates) if args.a_type == "TE" else set(),
         store_positions=store_positions,
         chromosome_offsets=chromosome_offsets,
-        ancestral_counts=_checked_table_array(
-            table / "ancestral_counts.npy", (store_positions.size, 4)),
+        ancestral_counts=ancestral_counts,
         present_draw_count=present_counts,
     )
     counts, vcf_sha256 = read_site_counts(
@@ -1474,6 +1512,7 @@ def calculate(args: argparse.Namespace) -> None:
             ),
             "ancestral_table": str(Path(args.ancestral_table).resolve()),
             "ancestral_table_schema_version": store_meta.get("schema_version"),
+            "ancestral_table_array_sha256": store_meta.get("array_sha256"),
             "te_sites_polarized": polarity.te_sites,
             "te_usable_arg_draws": polarity.te_usable_draws,
             "te_unusable_arg_draws": polarity.te_unusable_draws,
@@ -1500,7 +1539,25 @@ def calculate(args: argparse.Namespace) -> None:
             "reference_bootstrap_counts_array": "b_bootstrap_counts.npy",
             "minimum_null_replicates": args.min_null_replicates,
             "accepted_null_replicates": null_count,
-            "null_selection_rule": "every QC-passing non-reference set",
+            "null_selection_rule": (
+                f"the {args.max_null_replicates} QC-passing sets following B0 in "
+                "the seeded permutation"
+                if capped else "every QC-passing non-reference set"
+            ),
+            "max_null_replicates": args.max_null_replicates,
+            "qc_passing_sets": int(passing.size),
+            "selection_permutation_algorithm": (
+                "QC-passing sets ordered by replicate_id, permuted by "
+                "numpy.random.default_rng(seed).permutation, seed = first 8 bytes "
+                "(little-endian) of sha256('phi-sfs-reference:<reference_seed>:"
+                "<target_digest>'); B0 is the first set"
+            ),
+            "selected_null_replicate_ids": sorted(
+                int(value) for value in replicate_ids[null_source_indices]
+            ),
+            "unused_qc_passing_replicate_ids": sorted(
+                int(value) for value in replicate_ids[unused_source_indices]
+            ),
             "matched_sets_published": int(replicate_ids.size),
             "matched_sets_failing_qc": int(np.count_nonzero(~qc_pass)),
             "null_standard_deviation_ddof": 1,
@@ -1588,6 +1645,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--min-null-replicates", type=int, default=900,
         help="floor on R: every QC-passing non-reference set is a null, and "
              "the run fails if fewer than this many pass (default: 900)",
+    )
+    parser.add_argument(
+        "--max-null-replicates", type=int, default=None,
+        help="use exactly N nulls: the N QC-passing sets that follow B0 in the "
+             "seeded permutation. Fails if fewer than N + 1 sets pass QC. "
+             "Default: every QC-passing non-reference set",
     )
     parser.add_argument(
         "--reference-sensitivity", type=int, default=0,

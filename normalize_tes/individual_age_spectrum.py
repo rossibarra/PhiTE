@@ -90,6 +90,7 @@ from typing import Iterator, Sequence
 
 import numpy as np
 
+from .build_ancestral_states import verify_table_arrays
 from .build_draw_polarity import NO_CALL, open_draw_polarity
 from .phi_sfs import _open_vcf
 from .release_provenance import software_provenance
@@ -924,6 +925,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SystemExit(
                 f"{table}: ancestral_counts.npy has shape {counts.shape}, expected "
                 f"{(positions.size, 4)}")
+        present = np.load(table / "present_draw_count.npy", mmap_mode="r",
+                          allow_pickle=False)
+        try:
+            verify_table_arrays(table, polarity_metadata, counts, present)
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
         marginal = counts
 
     accumulator = Accumulator.empty([], binning)

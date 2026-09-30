@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from ancestral_table_helpers import stamp_ancestral_table
 from normalize_tes import build_candidate_rows
 from normalize_tes import te_age_target
 from normalize_tes.vcf_eligibility import (
@@ -58,13 +59,12 @@ def _write_ancestral_table(path, *, digest="content"):
     np.save(path / "ancestral_counts.npy", counts)
     np.save(path / "present_draw_count.npy", present)
     (path / "metadata.json").write_text(json.dumps({
-        "schema_version": "ancestral-state-counts-v1",
         "bases": ["A", "C", "G", "T"],
         "store_content_sha256": digest,
         "store_rows": 5,
         "complete": True,
     }), encoding="utf-8")
-    return path
+    return stamp_ancestral_table(path)
 
 
 def test_scan_enforces_callability_and_nonpolarity_rules(tmp_path):
@@ -110,6 +110,25 @@ def test_ancestral_table_is_authenticated_against_store(tmp_path):
     other.metadata["content_sha256"] = "other"
     with pytest.raises(SystemExit, match="authenticate"):
         load_ancestral_table(table, other)
+
+
+def test_ancestral_table_arrays_must_match_their_digests(tmp_path):
+    table = _write_ancestral_table(tmp_path / "ancestral")
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[0, 1] += 1
+    np.save(table / "ancestral_counts.npy", counts)
+    with pytest.raises(SystemExit, match="does not match its recorded digest"):
+        load_ancestral_table(table, _store())
+
+
+def test_ancestral_table_without_digests_is_refused(tmp_path):
+    table = _write_ancestral_table(tmp_path / "ancestral")
+    metadata = json.loads((table / "metadata.json").read_text())
+    metadata["schema_version"] = "ancestral-state-counts-v1"
+    del metadata["array_sha256"]
+    (table / "metadata.json").write_text(json.dumps(metadata))
+    with pytest.raises(SystemExit, match="unsupported ancestral-table schema"):
+        load_ancestral_table(table, _store())
 
 
 def test_heterozygous_missing_policy_matches_callability_semantics(tmp_path):

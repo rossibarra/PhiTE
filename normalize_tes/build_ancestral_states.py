@@ -48,6 +48,41 @@ import numpy as np
 from .draw_identity import DrawIndex
 from .release_provenance import software_provenance
 from .snp_age_store import open_snp_age_store, store_schema
+from .vcf_eligibility import _sha256_array
+
+
+# v2 adds `array_sha256`, the content digest of each published array. The store
+# digest binds a table to its store, but nothing bound the arrays to the
+# metadata: a corrupted, truncated-and-repadded or swapped-in array of the right
+# shape would polarize every site wrongly while every other check passed.
+SCHEMA_VERSION = "ancestral-state-counts-v2"
+ARRAY_NAMES = ("ancestral_counts", "present_draw_count")
+
+
+def verify_table_arrays(
+    location: object, metadata: dict, counts: np.ndarray, present: np.ndarray,
+) -> None:
+    """Require `metadata` to be a v2 table whose digests match these arrays.
+
+    Raises ValueError; callers translate it into their own error style. Reading
+    the digests forces a full pass over both arrays, which is the point: a
+    memory-mapped table is otherwise trusted unread.
+    """
+    if metadata.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            f"{location}: ancestral table schema is "
+            f"{metadata.get('schema_version')!r}, expected {SCHEMA_VERSION!r}; "
+            "rebuild it with the current normalize_tes.build_ancestral_states"
+        )
+    recorded = metadata.get("array_sha256")
+    if not isinstance(recorded, dict):
+        raise ValueError(f"{location}: ancestral table records no array digests")
+    for name, array in zip(ARRAY_NAMES, (counts, present)):
+        if recorded.get(name) != _sha256_array(array):
+            raise ValueError(
+                f"{location}: {name}.npy does not match its recorded digest; the "
+                "table is corrupt or its arrays were replaced"
+            )
 
 BASES = ("A", "C", "G", "T")
 _BASE_INDEX = {base.encode(): index for index, base in enumerate(BASES)}
@@ -253,8 +288,9 @@ def main(argv: list[str] | None = None) -> int:
             seen_paths.add(resolved_part)
             part_meta = json.loads(
                 (part / "metadata.json").read_text(encoding="utf-8"))
-            if part_meta.get("schema_version") != "ancestral-state-counts-v1":
-                raise SystemExit(f"{part}: not an ancestral-state table")
+            if part_meta.get("schema_version") != SCHEMA_VERSION:
+                raise SystemExit(
+                    f"{part}: is not an {SCHEMA_VERSION} table")
             if not part_meta.get("complete"):
                 raise SystemExit(f"{part}: table is incomplete")
             if part_meta.get("store_content_sha256") != metadata_store.get(
@@ -301,6 +337,10 @@ def main(argv: list[str] | None = None) -> int:
                 if array.dtype.kind != "u":
                     raise SystemExit(
                         f"{part}: {name}.npy has dtype {array.dtype}, expected unsigned")
+            try:
+                verify_table_arrays(part, part_meta, part_counts, part_present)
+            except ValueError as error:
+                raise SystemExit(str(error)) from None
             if np.any(part_counts.sum(axis=1) > part_present):
                 raise SystemExit(
                     f"{part}: some rows record more ancestral calls than draws")
@@ -363,7 +403,11 @@ def main(argv: list[str] | None = None) -> int:
     contested = int(np.count_nonzero((present > 0) & (proportion < 0.9)))
 
     metadata = {
-        "schema_version": "ancestral-state-counts-v1",
+        "schema_version": SCHEMA_VERSION,
+        "array_sha256": {
+            name: _sha256_array(array)
+            for name, array in zip(ARRAY_NAMES, (counts, present))
+        },
         "bases": list(BASES),
         "store": str(Path(args.store).resolve()),
         "store_schema": store_schema(store),
