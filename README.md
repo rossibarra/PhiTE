@@ -147,8 +147,9 @@ path moves.
 
 ### 2. Build the ancestral-state table
 
-Build one store-aligned ancestral-state table. It supplies the posterior SNP
-orientation probabilities used for both SNP A sites and SNP B controls:
+Build one store-aligned ancestral-state table. It supplies the posterior
+orientation probability of every site, TE and SNP, in focal set A and in the B
+controls:
 
 ```bash
 python -m normalize_tes.build_ancestral_states \
@@ -166,6 +167,10 @@ python -m normalize_tes.build_ancestral_states \
 Each draw is authenticated against the store by content rather than path. For an
 array build, use `--draws START:STOP` for each part and merge the parts with
 `--merge ... --expect-draws N`; the launcher example below shows this pattern.
+Tables use schema `ancestral-state-counts-v2`, which records a SHA-256 digest of
+each array. The merge and every reader verify the digests, so a corrupted or
+replaced array fails instead of silently mispolarizing sites. A v1 table is
+refused and must be rebuilt.
 
 ### 3. Build the shared VCF eligibility artifact
 
@@ -342,6 +347,7 @@ python -m normalize_tes.phi_sfs \
 | `--reference-replicate` | optional explicit $B_0$ replicate ID, overriding the draw |
 | `--min-null-replicates` | floor on $R$: every QC-passing non-reference set is a null, and the run fails if fewer than this pass; default 900 |
 | `--reference-sensitivity` | optionally repeat calibration with $N$ alternative references, the next $N$ sets of the same seeded permutation; default 0 |
+| `--max-null-replicates` | optionally fix $R=N$: $B_0$ is the first QC-passing set of the seeded permutation and the nulls are the next $N$; fails if fewer than $N+1$ pass; cannot be combined with `--reference-replicate` or `--reference-sensitivity`; default unset, meaning every QC-passing set |
 | `--asymmetric-polarity-null`, `--no-asymmetric-polarity-null` | hard-orient A and every null by one Bernoulli-$q$ draw per site, keeping $B_0$ a mixture; off by default, when A, $B_0$ and every null are posterior mixtures |
 | `--polarity-imputation-seed` | seed for the coordinate-keyed Bernoulli-$q$ orientations; used only with `--asymmetric-polarity-null`; default 2001 |
 | `--output` | new Phi-SFS result directory |
@@ -460,9 +466,17 @@ $$
 
 Because $E[h(\mathrm{DAF})]=q\,h(k,n)+(1-q)\,h(n-k,n)$, a Bernoulli-$q$ hard spectrum
 is the mixture plus imputation noise that carries no information about the data.
-The mixture avoids that noise and has no dependence on an imputation seed. This
-all-mixture design has **not yet** been validated in simulation. The simulation row
-above uses Bernoulli-$q$ A and nulls with true ages, not mixtures with inferred ages.
+The mixture avoids that noise and has no dependence on an imputation seed. The
+simulation rows above use Bernoulli-$q$ A and nulls, not mixtures. The all-mixture
+design itself was run on the original dnAging replicates (10 replicates, the
+simulation where the former TE design also passed). There it rejected 0.8–4.0% of
+tests at $\alpha=0.05$. That is valid but conservative, and it held under
+sequential depletion wherever tests had at least 19 nulls (see
+[All-mixture and depletion simulation](#all-mixture-and-depletion-simulation)).
+It has **not yet** been run on the unpolarised or reference-haplotype replicates,
+where the former design failed. That test, and the production-matcher negative
+control, are blocking items in
+[REMAINING_VALIDATION_PROPOSAL.md](docs/REMAINING_VALIDATION_PROPOSAL.md).
 
 **Option: Bernoulli-$q$ hard orientation.** With `--asymmetric-polarity-null`, A and
 every $B_i$ are hard-oriented by one Bernoulli-$q$ draw per site, and $B_0$ stays a

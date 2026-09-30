@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.9.0-rc2 — 2026-09-29
+
+This release candidate replaces rc1's Bernoulli-q asymmetric null with posterior
+TE polarity and an all-mixture null. It is the code against which the blocking
+validation in `docs/REMAINING_VALIDATION_PROPOSAL.md` is run.
+
 ### TEs polarized by the ARG posterior; all-mixture null by default
 
 - TE sites are now polarized from the ARG ancestral table exactly as SNPs are.
@@ -18,8 +24,13 @@
   and every null are q-mixtures. `--asymmetric-polarity-null` is opt-in and
   hard-orients A (TE or SNP) and every null-left set by the coordinate-keyed
   Bernoulli(q) draw, keeping B0 a mixture. The Farm launcher defaults to
-  `ASYMMETRIC_POLARITY_NULL=false`. The all-mixture design has not yet been
-  validated in simulation.
+  `ASYMMETRIC_POLARITY_NULL=false`. In the original dnAging replicates the
+  all-mixture arms rejected 0.8–4.0% at alpha=0.05 (conservative). They have
+  not yet been run on the unpolarised or reference-haplotype replicates.
+- Without the TE polarity mask, the in-gene target's matching QC went from 0/10
+  to 10/10 passing sets (median best W1 from 3,831 to 53 generations; 10
+  replicates, 3 restarts, seed 1002). This resolves the blocker in review 12,
+  finding 6, at that scale.
 - The matcher and Phi-SFS refuse any target built with `--te-polarity-mask` or
   `--max-flipped-fraction`, for either A type. The matcher also refuses a
   target carrying `te_keep_draws.npy`. `run_bootstrap_matching.sbatch` exits if
@@ -29,6 +40,21 @@
   targets, so a TE that no draw orients cannot enter A.
 - Phi-SFS output is now `phi-sfs-wasserstein-v3`, and `phi_contrast` requires
   v3. Existing masked targets, their matches, and v2 results must be rebuilt.
+
+### Ancestral-table integrity and a fixed null count
+
+- Ancestral tables are now `ancestral-state-counts-v2`, which records the
+  SHA-256 of `ancestral_counts.npy` and `present_draw_count.npy`. The merge
+  verifies every part. `phi_sfs`, `vcf_eligibility` and
+  `individual_age_spectrum` verify the table when they load it, and Phi-SFS
+  output records the digests. v1 tables are refused and must be rebuilt.
+- New optional `phi_sfs --max-null-replicates N` (`MAX_NULL_REPLICATES` in
+  `run_phi_sfs.sbatch`). B0 is the first QC-passing set of the seeded
+  permutation and the nulls are the next N. It fails if fewer than N + 1 sets
+  pass. The output records the selected and unused replicate IDs and the
+  QC-passing count. Default behaviour, which uses every QC-passing set, is
+  unchanged.
+- The version is `0.9.0-rc2`, and the version tests check the constant.
 
 ## v0.9.0-rc1 — 2026-09-27
 
