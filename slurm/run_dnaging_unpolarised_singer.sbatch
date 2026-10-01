@@ -62,16 +62,22 @@ for f in "$orig_singer"/input/*; do
     if [[ -n "$REFERENCE_SEED" && "$(basename "$f")" == chr1.vcf.gz ]]; then continue; fi
     ln -sfn "$f" "$singer/input/$(basename "$f")"
 done
-if [[ -n "$REFERENCE_SEED" ]]; then
-    # The relabelled VCF is written in place, so a preempted write may be
-    # partial; regenerate it (deterministically, from the same seed) on resume.
-    rm -f "$singer/input/chr1.vcf.gz" "$singer/input/chr1.reference.json"
+if [[ -n "$REFERENCE_SEED" && ! ( -s "$singer/input/chr1.vcf.gz" && -s "$singer/input/chr1.reference.json" ) ]]; then
+    # The relabelled VCF is written to a staging directory and moved into place
+    # before its sidecar, so a VCF with its sidecar is complete. Keeping it on
+    # resume keeps its mtime, so snakemake does not rerun SINGER from scratch.
+    stage="$singer/input/.reference-stage"
+    rm -rf "$stage" "$singer/input/chr1.vcf.gz" "$singer/input/chr1.reference.json"
+    mkdir -p "$stage"
     . "$PROJECT/slurm/slurm_conda_bootstrap.sh"
     python -m tools.reference_haplotype_vcf \
         --vcf "$orig_singer/input/chr1.vcf.gz" \
-        --output "$singer/input/chr1.vcf.gz" \
+        --output "$stage/chr1.vcf.gz" \
         --seed $(( REFERENCE_SEED + SLURM_ARRAY_TASK_ID ))
     conda deactivate
+    mv "$stage/chr1.vcf.gz" "$singer/input/chr1.vcf.gz"
+    mv "$stage/chr1.reference.json" "$singer/input/chr1.reference.json"
+    rmdir "$stage"
 fi
 sed -e "s#^input-dir:.*#input-dir: \"$singer/input\"#" \
     -e "s#^output-dir:.*#output-dir: \"$singer/output\"#" \
