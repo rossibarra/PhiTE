@@ -291,6 +291,42 @@ The first 400 sets pass under both.
 
 The 1,001-set results stay on record as a V4 failure.
 
+## Amendment B (2026-10-01): which commit counts as rc2 (V9)
+
+**This changes a V9 item after results were seen.** The user made the change on
+2026-10-01.
+
+**What was seen.** No validation output records the `v0.9.0-rc2` commit itself.
+Each output records `git describe` at the time it was written, and these runs span
+several later commits:
+
+| output | recorded |
+|---|---|
+| V4 bundle, V5 (1,001 sets) | `v0.9.0-rc2-4-g9ec39f5` |
+| V5 (first 500 sets), V1 arms | `v0.9.0-rc2-4-g9ec39f5-dirty` |
+| V6 (300 tests) | 277 at `-4-g9ec39f5`, 2 at `-3-gf780721`, 6 at `-2-g5889409`, 15 dirty (below) |
+
+The commits after rc2 change only `slurm/` and `tools/`:
+`git diff --stat v0.9.0-rc2 9ec39f5 -- normalize_tes/` is empty.
+
+**Change.** The V9 item "Validation outputs record the exact `v0.9.0-rc2`
+commit" becomes: every validation output records `v0.9.0-rc2` or a later commit
+whose `normalize_tes/` is identical to rc2's, shown by an empty
+`git diff v0.9.0-rc2 <commit> -- normalize_tes/`.
+
+**Dirty trees.** A `-dirty` label means uncommitted edits were present, and the
+outputs do not record what they were. The matcher keeps a hash of its loaded
+source modules in `work/identity.json`, but that directory is deleted when a run
+completes, so it is not available afterwards.
+
+- V5 (first 500 sets) and the V1 arms ran with only
+  `docs/REMAINING_VALIDATION_PROPOSAL.md` and `slurm/run_phi_sfs.sbatch`
+  modified. Those edits were checked at submission, and neither file is in
+  `normalize_tes/`.
+- V6 tests 3 and 5 (`-2-g5889409-dirty`) and tests 162, 163, 168, 175, 181, 189,
+  216, 244, 245, 274, 279, 291 and 298 (`-4-g9ec39f5-dirty`) have no record of
+  what was modified. They do not yet meet the amended item.
+
 ## Order
 
 1. Commit this frozen file.
