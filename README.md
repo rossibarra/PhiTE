@@ -167,15 +167,17 @@ target, bundle, work directory and seed.
 
 `$PHI/summary.csv` holds one row per run. Report, for each category:
 
-- `site_count_m` ($M$) and `null_replicates_r` ($R$);
-- `observed_phi_sfs − null_mean`: the size of the departure, in DAF units;
-- `z_score`: the departure in null standard deviations. It grows with $M$, so do
-  not compare it across categories as an effect size;
+- **effect size: `observed_phi_sfs − null_mean`**, in DAF units. Raw
+  `observed_phi_sfs` includes a finite-sample floor that is larger for smaller
+  categories, so it is not comparable across categories on its own;
 - `p_value`: one-sided, add-one Monte Carlo. With $R\approx500$ the smallest
   possible value is about 0.002;
+- `site_count_m` ($M$) and `null_replicates_r` ($R$);
 - the CDFs and signed bin residuals (`observed_cdf_residual.npy`,
   `observed_bin_residual.npy`) for the direction of the shift.
 
+`z_score` grows with $M$ for the same departure, so it measures test strength,
+not effect size; do not plot it or compare it across categories.
 Between-category contrasts (`normalize_tes.phi_contrast`) are experimental and
 not validated. Report each category separately. See
 [docs/METHODS.md](docs/METHODS.md) for definitions and caveats.

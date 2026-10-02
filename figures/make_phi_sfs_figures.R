@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 
-# Deterministic vector versions of the two Phi-SFS explanatory figures.
+# Deterministic versions of the two Phi-SFS explanatory figures (PDF, and PNG
+# for the null figure).
 # Run from the repository root with:
 #   module load R/4.4.2
 #   Rscript figures/make_phi_sfs_figures.R
@@ -137,62 +138,69 @@ make_definition_figure <- function(path) {
     dev.off()
 }
 
-standardize <- function(x) as.numeric(scale(x))
-
+# Null figure: Phi-SFS on its own scale, one category per column. The gray
+# violin is the category's null distribution of Phi_i^0 (two neutral SNP sets of
+# the same size M), so its height is the finite-sample floor, which shrinks as
+# M grows. The point is Phi_obs, colored by its add-one P-value; the segment
+# from the null mean mu_0 to Phi_obs is the effect size, Phi_obs - mu_0.
+# Values are synthetic. Null means and SDs scale as 1/sqrt(M), anchored to the
+# in-gene production null (mean 0.0050, SD 0.0018 at M = 4,067).
 draw_violin <- function(values, center, width = 0.30) {
-    d <- density(values, from = -2.5, to = 4.0, n = 512, cut = 0,
-                 bw = "nrd0")
+    d <- density(values, from = min(values), to = max(values), n = 512,
+                 cut = 0, bw = "nrd0")
     half_width <- width * d$y / max(d$y)
     polygon(c(center - half_width, rev(center + half_width)),
             c(d$x, rev(d$x)), col = "#D0D0D0", border = "#B5B5B5",
             lwd = 1.8)
 }
 
-make_null_figure <- function(path) {
-    n <- 50000
-    u <- ((1:n) - 0.5) / n
-    nulls <- list(
-        standardize(qgamma(u, shape = 3.0)),
-        standardize(qt(u, df = 6)),
-        standardize(c(qnorm(u[seq_len(n / 2)], -0.75, 0.30),
-                      qnorm(u[(n / 2 + 1):n], 0.55, 0.23))),
-        standardize(qgamma(u, shape = 1.25))
-    )
-    observed_z <- c(3.4, 2.5, 1.6, 0.9)
-    minus_log10_p <- c(3.0, 2.15, 1.15, 0.45)
+draw_null_figure <- function() {
     categories <- c("In gene", "0-2 kb", "2-5 kb", ">5 kb")
+    site_count <- c(4000, 2500, 1200, 600)
+    observed <- c(0.0300, 0.0185, 0.0150, 0.0160)
+    null_count <- 500
+    u <- ((1:null_count) - 0.5) / null_count
+    shape <- (0.0050 / 0.0018)^2
+    nulls <- lapply(site_count, function(m) {
+        mu <- 0.0050 * sqrt(4067 / m)
+        qgamma(u, shape = shape, rate = shape / mu)
+    })
+    p_values <- mapply(function(null, obs) (1 + sum(null >= obs)) / (length(null) + 1),
+                       nulls, observed)
+    p_cap <- log10(null_count + 1)
+    minus_log10_p <- pmin(-log10(p_values), p_cap)
     blue <- colorRampPalette(c("#DEEBF7", "#6BAED6", "#08519C"))(301)
-    point_colors <- blue[1 + round(minus_log10_p / 3 * 300)]
+    point_colors <- blue[1 + round(minus_log10_p / p_cap * 300)]
+    ylim <- c(0, 0.034)
 
-    pdf(path, width = 10.2, height = 7.2, family = "Helvetica",
-        useDingbats = FALSE)
     layout(matrix(c(1, 2, 3), nrow = 1), widths = c(0.38, 4.7, 1.35))
-    par(oma = c(0, 0, 2.4, 0))
-
+    par(oma = c(0, 0, 3.2, 0))
     par(mar = rep(0, 4))
-    draw_vertical_label(
-        expression(paste("Null-standardized ", Phi[SFS], " (Z)")),
-        cex = 1.3
-    )
+    draw_vertical_label(expression(paste(Phi[SFS], " (DAF units)")), cex = 1.3)
 
-    par(mar = c(4.7, 4.3, 1.0, 0.6), mgp = c(2.8, 0.75, 0),
+    par(mar = c(6.2, 4.6, 1.0, 0.6), mgp = c(3.2, 0.75, 0),
         tcl = -0.35, las = 1)
-    plot(NA, xlim = c(0.45, 4.55), ylim = c(-2.5, 4.0), axes = FALSE,
+    plot(NA, xlim = c(0.45, 4.55), ylim = ylim, axes = FALSE,
          xlab = "", ylab = "", xaxs = "i", yaxs = "i")
-    abline(h = 0, col = "#8F8F8F", lty = 2, lwd = 2.1)
-    for (i in seq_along(nulls)) draw_violin(nulls[[i]], i)
-    lines(1:4, observed_z, col = "#79A6D2", lwd = 3.1)
-    points(1:4, observed_z, pch = 21, bg = point_colors,
-           col = "white", lwd = 2.0, cex = 2.0)
+    for (i in seq_along(nulls)) {
+        draw_violin(nulls[[i]], i)
+        mu <- mean(nulls[[i]])
+        segments(i - 0.16, mu, i + 0.16, mu, col = "#6F6F6F", lwd = 2.6)
+        segments(i, mu, i, observed[i], col = "#79A6D2", lwd = 3.1)
+    }
+    points(1:4, observed, pch = 21, bg = point_colors,
+           col = "white", lwd = 2.0, cex = 2.4)
     axis(1, at = 1:4, labels = categories, lwd = 2.8,
          lwd.ticks = 2.8, cex.axis = 1.25)
-    axis(2, at = seq(-2, 4, by = 1), lwd = 2.8,
+    mtext(paste0("M = ", formatC(site_count, format = "d", big.mark = ",")), side = 1,
+          at = 1:4, line = 2.4, cex = 0.95, col = "#5A5A5A")
+    axis(2, at = seq(0, 0.03, by = 0.01), lwd = 2.8,
          lwd.ticks = 2.8, cex.axis = 1.25)
     box(bty = "l", lwd = 2.8)
-    mtext("Distance to nearest gene", side = 1, line = 3.1,
+    mtext("Distance to nearest gene", side = 1, line = 4.4,
           cex = 1.45, font = 2)
 
-    par(mar = c(4.7, 0.4, 1.0, 0.5))
+    par(mar = c(6.2, 0.4, 1.0, 0.5))
     plot.new()
     plot.window(xlim = c(0, 1), ylim = c(0, 1))
     text(0.5, 0.91, expression(-log[10](italic(P)*"-value")),
@@ -201,18 +209,37 @@ make_null_figure <- function(path) {
     rect(edges[-length(edges)], 0.81, edges[-1], 0.865,
          col = blue, border = NA)
     rect(0.10, 0.81, 0.90, 0.865, border = ink, lwd = 1.8)
-    tick_x <- 0.10 + (0:3) / 3 * 0.80
+    tick_value <- c(0, 1, 2, p_cap)
+    tick_x <- 0.10 + tick_value / p_cap * 0.80
     segments(tick_x, 0.785, tick_x, 0.81, lwd = 1.7)
-    text(tick_x, 0.75, labels = 0:3, cex = 1.15)
+    text(tick_x, 0.75, labels = c("0", "1", "2", "2.7"), cex = 1.1)
     rect(0.12, 0.61, 0.24, 0.67, col = "#D0D0D0",
          border = "#B5B5B5", lwd = 1.8)
-    text(0.31, 0.64, "Null distribution", adj = 0, cex = 1.2,
-         font = 2)
+    text(0.31, 0.64, "Null distribution", adj = 0, cex = 1.2, font = 2)
+    segments(0.12, 0.53, 0.24, 0.53, col = "#6F6F6F", lwd = 2.6)
+    text(0.31, 0.53, expression(paste("Null mean ", mu[0])), adj = 0,
+         cex = 1.2, font = 2)
+    segments(0.18, 0.39, 0.18, 0.46, col = "#79A6D2", lwd = 3.1)
+    text(0.31, 0.425, expression(Phi[obs] - mu[0]), adj = 0,
+         cex = 1.2, font = 2)
+    text(0.31, 0.375, "effect size", adj = 0, cex = 1.05)
 
-    mtext("Illustrative example", side = 3, line = 0.5,
+    mtext("Illustrative example", side = 3, line = 1.0,
           outer = TRUE, cex = 1.85, font = 2)
+    invisible(p_values)
+}
+
+make_null_figure <- function(stem) {
+    pdf(paste0(stem, ".pdf"), width = 10.2, height = 7.2,
+        family = "Helvetica", useDingbats = FALSE)
+    p_values <- draw_null_figure()
     dev.off()
+    png(paste0(stem, ".png"), width = 10.2, height = 7.2, units = "in",
+        res = 180, family = "Helvetica")
+    draw_null_figure()
+    dev.off()
+    p_values
 }
 
 make_definition_figure("figures/phi_sfs_definition_schematic.pdf")
-make_null_figure("figures/phi_sfs_null_standardization_example.pdf")
+print(make_null_figure("figures/phi_sfs_null_example"))
