@@ -38,7 +38,7 @@ ALGORITHM_VERSION = "bootstrap-target-exact-greedy-v1"
 
 @dataclass(frozen=True)
 class OptimizerConfig:
-    replicates: int = 1001
+    replicates: int = 500
     restarts: int = 3
     min_epochs: int = 10
     max_epochs: int = 50
@@ -1506,9 +1506,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--keep-work", action="store_true",
                         help="keep the work directory after a successful publish")
     parser.add_argument(
-        "--replicates", type=int, default=1001,
+        "--replicates", type=int, default=500,
         help="bootstrap replicates to match, one published control set each "
-             "(default: 1001; Phi-SFS draws B0 from the QC-passing sets and "
+             "(default: 500; Phi-SFS draws B0 from the QC-passing sets and "
              "uses every other QC-passing set as a null)",
     )
     parser.add_argument(

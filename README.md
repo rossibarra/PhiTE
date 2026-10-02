@@ -118,7 +118,7 @@ python -m normalize_tes.bootstrap_target_matcher \
   --store "$STORE" --target "$TARGET" -A "$A_TYPE" \
   --candidate-rows "$CANDIDATES" --output "$MATCHES" \
   --work-dir "$WORK_DIR" --resume \
-  --replicates 500 --disjoint-replicates --seed 1002
+  --disjoint-replicates --seed 1002
 ```
 
 Keep `WORK_DIR` on durable storage. After a preemption, rerun the identical command
@@ -129,12 +129,10 @@ and the matcher resumes. `--te-positions` takes the focal positions for either t
 ```bash
 python -m normalize_tes.phi_sfs \
   --target "$TARGET" --matches "$MATCHES" --vcf "$VCF" \
-  --ancestral-table "$ANCESTRAL" -A "$A_TYPE" \
-  --min-null-replicates 450 --output "$PHI"
+  --ancestral-table "$ANCESTRAL" -A "$A_TYPE" --output "$PHI"
 ```
 
-Pass `--min-null-replicates 450`: the CLI default (900) belongs to the earlier
-1,001-set design and a 500-set bundle cannot meet it.
+The defaults publish 500 sets and require at least 450 QC-passing nulls.
 
 ### On Farm
 

@@ -335,6 +335,14 @@ the target digest, the choice of $B_0$; a same-node test confirmed this. The
 uncommitted edits did not change the analysis. V6 is judged on the original runs
 (11/300); the reruns give 10/300. Details are in `docs/VALIDATION.md`.
 
+**Default values (2026-10-02).** After validation, the package defaults changed
+to match production: `bootstrap_target_matcher --replicates` from 1001 to 500 and
+`phi_sfs --min-null-replicates` from 900 to 450. Every validation run passed these
+values explicitly, so no result depends on the defaults. The release commit's
+`normalize_tes/` therefore differs from rc2's in these two default values (and
+their help text) only; `git diff v0.9.0-rc2 <release> -- normalize_tes/` shows
+exactly that.
+
 ## Order
 
 1. Commit this frozen file.
