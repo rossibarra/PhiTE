@@ -176,6 +176,6 @@ were rerun on a clean checkout with the same seeds (`results/v6_clean_rerun`):
 
 **Known limitation.** Because $B_0$ is seeded from a digest of floating-point
 target arrays, rebuilding a target with a different thread count or CPU type can
-select a different $B_0$ and change P. Rerunning from the published target is
-reproducible. The fix, seeding $B_0$ from the target's inputs instead, is planned
+select a different $B_0$ and change P. Rerunning Phi-SFS on a published target
+and bundle draws the same $B_0$, because the seed then comes from the same digest. The fix, seeding $B_0$ from the target's inputs instead, is planned
 for the next release.
