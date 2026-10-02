@@ -1642,9 +1642,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "reference-sensitivity alternatives (default: 1002)",
     )
     parser.add_argument(
-        "--min-null-replicates", type=int, default=900,
+        "--min-null-replicates", type=int, default=450,
         help="floor on R: every QC-passing non-reference set is a null, and "
-             "the run fails if fewer than this many pass (default: 900)",
+             "the run fails if fewer than this many pass (default: 450)",
     )
     parser.add_argument(
         "--max-null-replicates", type=int, default=None,

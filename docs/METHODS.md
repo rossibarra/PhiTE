@@ -155,22 +155,44 @@ which shows how much the result depends on that one draw.
 the seeded permutation and the nulls are the next $N$. The negative control uses
 $N=99$, which gives an exact P-value grid of 0.01.
 
-## Interpreting Z and P
+## Effect size, P and Z
 
-The P-value tests whether a focal spectrum is farther from its matched neutral
-background than two finite neutral samples of the same size would be. $Z_A$
-expresses that departure in category-specific null standard deviations. Because
-$s_0$ shrinks as $M$ grows, $Z_A$ grows with $M$ for a fixed spectral difference:
-it measures test strength, not effect size. Report $\Phi_{\mathrm{obs}}-\mu_0$ (in
-DAF units), the signed CDF and bin residuals, and $M$ as the size of a departure.
-Neither Z nor P gives the direction of the shift; the CDFs and signed residuals do.
+**Effect size: $\Phi_{\mathrm{obs}}-\mu_0$**, in DAF units. Raw
+$\Phi_{\mathrm{obs}}$ is not an effect size on its own: two finite sets drawn from
+the same spectrum still have $\Phi>0$, and that floor, $\mu_0$, is larger for
+smaller $M$. A small category can therefore have the largest raw
+$\Phi_{\mathrm{obs}}$ and the smallest departure. Subtracting the category's own
+null mean removes the floor. It is an approximate correction: under an
+alternative, the observed distance and the floor need not simply add, so the
+excess is not necessarily the distance between the true spectra. Report it with $M$
+and the signed CDF and bin residuals, which give the direction of the shift.
 
-To plot many categories, draw one equal-size point per category at $Z_A$, colour
-it by $-\log_{10}P_A$, and show its null Z-score distribution in grey. Cap the
-colour scale at $\log_{10}(R+1)$, about 2.7 for $R\approx500$. Do not compare
-$Z_A$ across categories of different $M$ as an effect size.
+**P** tests whether the focal spectrum is farther from its matched neutral
+background than two finite neutral samples of the same size would be. It is the
+significance of the departure, not its size.
 
-![Illustrative category-specific null distributions, standardized Phi-SFS test statistics, and P-value colors](../figures/phi_sfs_null_standardization_example.png)
+**$Z_A$** expresses the departure in null standard deviations. Because $s_0$
+shrinks as $M$ grows, $Z_A$ grows with $M$ for a fixed spectral difference, so it
+measures test strength, not effect size. It is kept in `summary.csv` but should
+not be plotted or compared across categories.
+
+To plot many categories, use the $\Phi$ scale. For each category, draw its null
+distribution of $\Phi_i^0$ in grey, mark $\mu_0$, and draw $\Phi_{\mathrm{obs}}$
+as a point coloured by $-\log_{10}P_A$, with a segment from $\mu_0$ to
+$\Phi_{\mathrm{obs}}$ for the effect size. Cap the colour scale at
+$\log_{10}(R+1)$, about 2.7 for $R\approx500$.
+
+![Illustrative Phi-SFS null distributions by category, with observed values, null means, effect sizes and P-value colours](../figures/phi_sfs_null_example.png)
+
+In this synthetic example, the >5 kb category has the highest raw
+$\Phi_{\mathrm{obs}}$ but the smallest effect, and is not significant, because
+its small $M$ gives it the highest floor.
+
+`docs/PHI_SFS_SAMPLE_SIZE_BIAS.md` gives a floor correction,
+$\sqrt{\Phi_{\mathrm{obs}}^2-\Phi_{\mathrm{floor}}^2}$, that recovers the true
+distance more closely. It was validated for the earlier total-variation
+statistic, not for the current Wasserstein distance, so it is not used here until
+it has been checked for $W_1$.
 
 ## Assumptions and limits
 

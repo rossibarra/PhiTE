@@ -116,12 +116,12 @@ def _candidate_file(tmp_path, rows, *, identity=None):
 
 
 def test_default_replicate_count_provides_reference_and_null_sets():
-    assert OptimizerConfig().replicates == 1001
+    assert OptimizerConfig().replicates == 500
     args = parse_args([
         "--store", "store", "--target", "target", "--all-eligible",
         "--output", "output", "--disjoint-replicates",
     ])
-    assert args.replicates == 1001
+    assert args.replicates == 500
     assert args.disjoint_replicates
     assert args.a_type == "TE"
 

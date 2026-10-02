@@ -327,6 +327,22 @@ completes, so it is not available afterwards.
   216, 244, 245, 274, 279, 291 and 298 (`-4-g9ec39f5-dirty`) have no record of
   what was modified. They do not yet meet the amended item.
 
+**Resolution (2026-10-02).** The 15 tests were rerun on a clean checkout with the
+same seeds. Ten reproduced exactly and one reproduced its P. The other four
+differed because their age targets were rebuilt with a different thread count or
+CPU type, which changes the bootstrap distances in the last digits and, through
+the target digest, the choice of $B_0$; a same-node test confirmed this. The
+uncommitted edits did not change the analysis. V6 is judged on the original runs
+(11/300); the reruns give 10/300. Details are in `docs/VALIDATION.md`.
+
+**Default values (2026-10-02).** After validation, the package defaults changed
+to match production: `bootstrap_target_matcher --replicates` from 1001 to 500 and
+`phi_sfs --min-null-replicates` from 900 to 450. Every validation run passed these
+values explicitly, so no result depends on the defaults. The release commit's
+`normalize_tes/` therefore differs from rc2's in these two default values (and
+their help text) and in the version string (`0.9.0-rc2` to `0.9.0`) only;
+`git diff v0.9.0-rc2 <release> -- normalize_tes/` shows exactly that.
+
 ## Order
 
 1. Commit this frozen file.

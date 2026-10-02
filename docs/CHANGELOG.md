@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## v0.9.0 — 2026-10-02
+
+Releases rc2's design after the blocking validation in
+`docs/REMAINING_VALIDATION_PROPOSAL.md` (V1, V2, V4, V5, V6, V9, V10) passed; see
+`docs/VALIDATION.md`.
+
+- The matcher publishes 500 sets by default (was 1001), and Phi-SFS requires at
+  least 450 QC-passing nulls by default (was 900). A 1,001-set run drifted in its
+  last ~200 sets as disjoint matching depleted the pool; validation covers 500
+  (Amendment A in `docs/REMAINING_VALIDATION_PROPOSAL.md`). Only the default
+  values change.
+- The README is split into a short operator guide plus `docs/OPTIONS.md`,
+  `docs/METHODS.md` and `docs/VALIDATION.md`.
+- The effect size is $\Phi_{\mathrm{obs}}-\mu_0$; Z is a test statistic only, and
+  the example figure plots categories on the Phi scale.
+- Known limitation: $B_0$ is seeded from a digest of the target's floating-point
+  arrays, so rebuilding a target with a different thread count or CPU type can
+  change $B_0$ (see `docs/VALIDATION.md`).
+
 ## v0.9.0-rc2 — 2026-09-29
 
 This release candidate replaces rc1's Bernoulli-q asymmetric null with posterior

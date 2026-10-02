@@ -1,4 +1,4 @@
-# PhiTE v0.9.0-rc2
+# PhiTE v0.9.0
 
 PhiTE asks whether a focal set of variants, usually a category of transposable
 elements (TEs), has a different site-frequency spectrum (SFS) from neutral SNPs of
@@ -118,7 +118,7 @@ python -m normalize_tes.bootstrap_target_matcher \
   --store "$STORE" --target "$TARGET" -A "$A_TYPE" \
   --candidate-rows "$CANDIDATES" --output "$MATCHES" \
   --work-dir "$WORK_DIR" --resume \
-  --replicates 500 --disjoint-replicates --seed 1002
+  --disjoint-replicates --seed 1002
 ```
 
 Keep `WORK_DIR` on durable storage. After a preemption, rerun the identical command
@@ -129,12 +129,10 @@ and the matcher resumes. `--te-positions` takes the focal positions for either t
 ```bash
 python -m normalize_tes.phi_sfs \
   --target "$TARGET" --matches "$MATCHES" --vcf "$VCF" \
-  --ancestral-table "$ANCESTRAL" -A "$A_TYPE" \
-  --min-null-replicates 450 --output "$PHI"
+  --ancestral-table "$ANCESTRAL" -A "$A_TYPE" --output "$PHI"
 ```
 
-Pass `--min-null-replicates 450`: the CLI default (900) belongs to the earlier
-1,001-set design and a 500-set bundle cannot meet it.
+The defaults publish 500 sets and require at least 450 QC-passing nulls.
 
 ### On Farm
 
@@ -167,15 +165,17 @@ target, bundle, work directory and seed.
 
 `$PHI/summary.csv` holds one row per run. Report, for each category:
 
-- `site_count_m` ($M$) and `null_replicates_r` ($R$);
-- `observed_phi_sfs − null_mean`: the size of the departure, in DAF units;
-- `z_score`: the departure in null standard deviations. It grows with $M$, so do
-  not compare it across categories as an effect size;
+- **effect size: `observed_phi_sfs − null_mean`**, in DAF units. Raw
+  `observed_phi_sfs` includes a finite-sample floor that is larger for smaller
+  categories, so it is not comparable across categories on its own;
 - `p_value`: one-sided, add-one Monte Carlo. With $R\approx500$ the smallest
   possible value is about 0.002;
+- `site_count_m` ($M$) and `null_replicates_r` ($R$);
 - the CDFs and signed bin residuals (`observed_cdf_residual.npy`,
   `observed_bin_residual.npy`) for the direction of the shift.
 
+`z_score` grows with $M$ for the same departure, so it measures test strength,
+not effect size; do not plot it or compare it across categories.
 Between-category contrasts (`normalize_tes.phi_contrast`) are experimental and
 not validated. Report each category separately. See
 [docs/METHODS.md](docs/METHODS.md) for definitions and caveats.

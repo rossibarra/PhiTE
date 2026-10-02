@@ -1,5 +1,11 @@
 # Phi-SFS is biased upward at small target sizes
 
+> **Note (2026-10-02).** This analysis used the earlier total-variation form of
+> Phi-SFS. The current statistic is the Wasserstein distance $W_1$
+> ([METHODS.md](METHODS.md)). The floor still exists for $W_1$, but the
+> quadrature correction below has not been validated for it. Production reports
+> $\Phi_{\mathrm{obs}}-\mu_0$ as the effect size until it is.
+
 ## Summary
 
 Phi-SFS is a distance, so it is strictly positive between any two finite sets of

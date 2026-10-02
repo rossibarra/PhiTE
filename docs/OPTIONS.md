@@ -122,7 +122,7 @@ Matcher (`normalize_tes.bootstrap_target_matcher`):
 | `--output` | new matched-control bundle | required |
 | `--work-dir` | durable per-replicate state for `--resume` | required |
 | `--resume` | continue an interrupted compatible run | off |
-| `--replicates` | control sets to publish; production uses 500 | 1001 |
+| `--replicates` | control sets to publish | 500 |
 | `--restarts` | optimization restarts per set | 3 |
 | `--disjoint-replicates` | never reuse a control SNP between sets; required in production | off |
 | `--init-mode` | `median`, `mass` or `random` starting set per restart | `median` |
@@ -145,7 +145,7 @@ exactly, including whether the checkout had uncommitted edits.
 | `-B`, `--b-type` | control type; only `SNP` | `SNP` |
 | `--reference-seed` | seed, with the target digest, for drawing $B_0$ | 1002 |
 | `--reference-replicate` | use this replicate ID as $B_0$ instead of drawing it | none |
-| `--min-null-replicates` | fail if fewer QC-passing nulls; production uses 450 | 900 |
+| `--min-null-replicates` | fail if fewer QC-passing nulls | 450 |
 | `--max-null-replicates N` | fix $R=N$ from the seeded permutation; fails if fewer than $N+1$ pass | every passing set |
 | `--reference-sensitivity N` | repeat calibration with the next $N$ sets as $B_0$ | 0 |
 | `--asymmetric-polarity-null` | Bernoulli-$q$ option (see [METHODS.md](METHODS.md)) | off |
