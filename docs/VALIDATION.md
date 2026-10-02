@@ -19,7 +19,7 @@ Production settings and measured resources are in
 | V6 | real-data negative control through the production matcher | **pass**: 11/300 rejections |
 | V7 | exchangeability | covered by V4, V5 and V6 |
 | V8 | between-category contrasts | out of scope; `phi_contrast` stays experimental |
-| V9 | release housekeeping | tests pass; 15 V6 tests are being rerun on a clean checkout (Amendment B) |
+| V9 | release housekeeping | **pass**; tests pass, and the 15 dirty-checkout V6 tests were rerun (Amendment B) |
 | V10 | ancestral-table digests, fixed-$R$ option | done |
 | V11 | documented limits | see [METHODS.md](METHODS.md#assumptions-and-limits) |
 
@@ -154,6 +154,28 @@ matching threshold. Provenance: `results/phi_sfs/snp_type1_asymmetric_100/summar
 Ancestral tables record a SHA-256 digest of each array, and every reader verifies
 it. No validation output records the `v0.9.0-rc2` commit itself: the runs span
 later commits that change only `slurm/` and `tools/`. Under Amendment B, an output
-counts if its commit's `normalize_tes/` is identical to rc2's. Fifteen V6 tests
-ran on a checkout with unrecorded uncommitted edits; they are being rerun on a
-clean checkout with the same seeds, and must reproduce the same P-values.
+counts if its commit's `normalize_tes/` is identical to rc2's.
+
+Fifteen V6 tests had run on a checkout with unrecorded uncommitted edits. They
+were rerun on a clean checkout with the same seeds (`results/v6_clean_rerun`):
+
+- 10 reproduced bit for bit, and test 163 reproduced its $B_0$, nulls and P, with
+  the null mean and SD differing only in the last digits.
+- Tests 3, 5, 245 and 279 drew a different $B_0$. Their focal sets, candidate rows
+  and matching QC were identical, but the age target's bootstrap distances
+  differed by about 1 part in $10^5$. The target digest hashes those values, and
+  the $B_0$ draw is seeded from the digest, so the difference changed $B_0$.
+- A follow-up built test 279's target repeatedly on one node
+  (`results/target_determinism_39392444`). Builds with the same thread count were
+  bit-identical on that node and on a second node of the same kind; changing the
+  thread count (1, 2 or 6) or running on a GPU node changed the values. Tests 3
+  and 5 originally ran with 6 CPUs and tests 245 and 279 on a GPU node, which
+  accounts for all four. The uncommitted edits were not the cause.
+- Test 279's P moved from 0.04 to 0.61. V6 counts the original runs (11/300
+  rejections); with the reruns it would be 10/300. Both pass.
+
+**Known limitation.** Because $B_0$ is seeded from a digest of floating-point
+target arrays, rebuilding a target with a different thread count or CPU type can
+select a different $B_0$ and change P. Rerunning from the published target is
+reproducible. The fix, seeding $B_0$ from the target's inputs instead, is planned
+for the next release.

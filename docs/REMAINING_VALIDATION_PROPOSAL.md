@@ -327,6 +327,14 @@ completes, so it is not available afterwards.
   216, 244, 245, 274, 279, 291 and 298 (`-4-g9ec39f5-dirty`) have no record of
   what was modified. They do not yet meet the amended item.
 
+**Resolution (2026-10-02).** The 15 tests were rerun on a clean checkout with the
+same seeds. Ten reproduced exactly and one reproduced its P. The other four
+differed because their age targets were rebuilt with a different thread count or
+CPU type, which changes the bootstrap distances in the last digits and, through
+the target digest, the choice of $B_0$; a same-node test confirmed this. The
+uncommitted edits did not change the analysis. V6 is judged on the original runs
+(11/300); the reruns give 10/300. Details are in `docs/VALIDATION.md`.
+
 ## Order
 
 1. Commit this frozen file.
