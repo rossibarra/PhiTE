@@ -102,6 +102,8 @@ the observed power. Report the true-DAF displacement each one induces.
 
 ## V4. Full production matching and depletion (blocking)
 
+> **Amended 2026-10-01 after results were seen; see Amendment A.**
+
 **Run.** `results/targets/in_gene_v0.9_posterior`, 1,001 disjoint sets,
 3 restarts, seed 1002.
 
@@ -124,6 +126,8 @@ the observed power. Report the true-DAF displacement each one induces.
 - KS statistics.
 
 ## V5. Production Phi-SFS on V4 (blocking; integrity only)
+
+> **Amended 2026-10-01 after results were seen; see Amendment A.**
 
 - R ≥ 900.
 - Every set used passes QC.
@@ -248,6 +252,44 @@ figures:
 | 200 | 12 | 0.796 | 0.032 |
 | 300 | 21 | 0.951 | 0.046 |
 | 400 | 29 | 0.981 | 0.036 |
+
+## Amendment A (2026-10-01): V4 and V5 on the first 500 sets
+
+**This breaks the freeze rule above.** The user made the change after seeing the
+V4 drift result. It is recorded here so the release does not present the
+500-set criteria as prespecified.
+
+**What was seen.** The 1,001-set V4 run (`results/bootstrap_matches/in_gene_rc2`)
+passed the five matching criteria: reuse 1, no duplicates, 996 QC passes, at
+least 95 passes in every block of 100, and a 5-point fall. It **failed** SFS
+drift: rho = 0.164 and early-versus-late SMD = 0.476
+(`results/v4/in_gene_rc2`). Mean distance to the pooled spectrum is flat through
+replicate 799 and rises in blocks 800-899 and 900-999. Median W1 against the
+bootstrap target follows the same pattern, at 50-54 through block 6 and then
+85, 185 and 320, and all five QC failures fall in block 900-999. Late sets
+appear to be matched from a depleted pool. That has not been checked per
+stratum.
+
+The definitions `tools/v4_depletion_report.py` uses were fixed before the drift
+was computed: Phi distance to the pooled spectrum, Spearman rho, and SMD between
+the first and last quarters. Under the alternatives checked afterwards, the first
+500 sets pass with Phi, but with L1 distance the quarter SMD is 0.279 and fails.
+The first 400 sets pass under both.
+
+**Change.**
+- V4 and V5 use replicates 0-499 of the same run, written by
+  `tools/trim_match_bundle.py` to `results/bootstrap_matches/in_gene_rc2_first500`.
+  Seeds depend only on the global seed, the target digest, the replicate and the
+  restart, and depletion is sequential. The first 500 sets are therefore the
+  sets a 500-set run would produce. That follows from the code; no separate
+  500-set run was made.
+- V4: at least 451 QC passes (901/1,001 scaled to 500). The block, QC-fall and
+  drift criteria are unchanged and apply to the five complete blocks.
+- V5: R >= 450 replaces R >= 900. Reference sensitivity uses N = 10 alternative
+  references (`REFERENCE_SENSITIVITY=10`). The proposal had not fixed N.
+- The smallest attainable P rises from 1/996 (R = 995) to 1/500 (R = 499).
+
+The 1,001-set results stay on record as a V4 failure.
 
 ## Order
 
