@@ -473,10 +473,15 @@ simulation where the former TE design also passed). There it rejected 0.8–4.0%
 tests at $\alpha=0.05$. That is valid but conservative, and it held under
 sequential depletion wherever tests had at least 19 nulls (see
 [All-mixture and depletion simulation](#all-mixture-and-depletion-simulation)).
-It has **not yet** been run on the unpolarised or reference-haplotype replicates,
-where the former design failed. That test (V1) is a blocking item in
-[REMAINING_VALIDATION_PROPOSAL.md](docs/REMAINING_VALIDATION_PROPOSAL.md). The
-production-matcher negative control (V6) has passed; see
+It also holds on the unpolarised and reference-haplotype replicates (validation
+item V1 in
+[REMAINING_VALIDATION_PROPOSAL.md](docs/REMAINING_VALIDATION_PROPOSAL.md)). On the
+same 10 paired replicates, the simulator's `production` arm (A true, $B_0$ a
+mixture, Bernoulli-$q$ nulls) rejected 14–83% of tests. The four all-mixture arms
+rejected 0.6–4.6% in every cell, with one-sided 95% replicate-bootstrap upper
+bounds of at most 0.060, against a limit of 0.10. The depleted arms could not
+reach 19 nulls at $M=4000$, so they are untested at that size. The
+production-matcher negative control (V6) has also passed; see
 [Production negative control](#production-negative-control).
 
 **Option: Bernoulli-$q$ hard orientation.** With `--asymmetric-polarity-null`, A and
@@ -662,6 +667,21 @@ HPC_LOW=high HPC_HIGH=high HPC_CPUS=1 HPC_MEM=16G HPC_TIME=08:00:00 \
     --replicates 1 2 3 4 5 6 7 8 9 10 \
     --sizes 250 1000 4000 \
     --tests 50 --nulls 199 --mixture-sets 80'
+```
+
+V1 ran the same simulator on the unpolarised and reference-haplotype replicates
+(job time about 40 minutes each), and `tools/v1_report.py` judges each condition,
+arm and $M$:
+
+```bash
+python -m tools.sim_polarity_arms \
+  --prep-root results/sim_dnaging_refhap/prep \
+  --output results/sim_dnaging_refhap/arms_v1_rc2 \
+  --replicates 1 2 3 4 5 6 7 8 9 10
+python -m tools.v1_report \
+  --condition unpolarised=results/sim_dnaging_unpolarised/arms_v1_rc2 \
+  --condition refhap=results/sim_dnaging_refhap/arms_v1_rc2 \
+  --output results/v1_report
 ```
 
 The focal A set is observed once and remains fixed. Small or unusual focal sets can
