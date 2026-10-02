@@ -46,7 +46,7 @@
 #   B_TYPE      SNP for matched control sets B                          (SNP)
 #   REFERENCE_REPLICATE  B0 replicate ID; unset draws B0 at random   (unset)
 #   REFERENCE_SEED   seed for the B0 draw, with the target digest   (1002)
-#   MIN_NULL_REPLICATES  floor on R, the number of QC-passing nulls    (900)
+#   MIN_NULL_REPLICATES  floor on R, the number of QC-passing nulls    (450)
 #   MAX_NULL_REPLICATES  fix R at exactly N nulls from the seeded order  (unset)
 #   REFERENCE_SENSITIVITY  rerun calibration with N alternative B0s        (0)
 #   ASYMMETRIC_POLARITY_NULL  true for Bernoulli-q left vs mixture B0 (false)
@@ -72,7 +72,7 @@ A_TYPE="${A_TYPE:-TE}"
 B_TYPE="${B_TYPE:-SNP}"
 REFERENCE_REPLICATE="${REFERENCE_REPLICATE:-}"
 REFERENCE_SEED="${REFERENCE_SEED:-1002}"
-MIN_NULL_REPLICATES="${MIN_NULL_REPLICATES:-900}"
+MIN_NULL_REPLICATES="${MIN_NULL_REPLICATES:-450}"
 MAX_NULL_REPLICATES="${MAX_NULL_REPLICATES:-}"
 REFERENCE_SENSITIVITY="${REFERENCE_SENSITIVITY:-0}"
 ASYMMETRIC_POLARITY_NULL="${ASYMMETRIC_POLARITY_NULL:-false}"

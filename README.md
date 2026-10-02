@@ -1,4 +1,4 @@
-# PhiTE v0.9.0-rc1
+# PhiTE v0.9.0-rc2
 
 PhiTE builds neutral SNP control sets matched to the posterior ages of a focal
 variant category, then compares their unfolded site-frequency spectra. Dataset A may
@@ -257,7 +257,7 @@ python -m normalize_tes.bootstrap_target_matcher \
   --output "$MATCHES" \
   --work-dir "$WORK_DIR" \
   --resume \
-  --replicates 1001 \
+  --replicates 500 \
   --restarts 3 \
   --disjoint-replicates \
   --seed 1002
@@ -292,7 +292,7 @@ Matcher flags:
 | `--output` | new matched-control bundle |
 | `--work-dir` | durable per-replicate state used by `--resume` |
 | `--resume` | continue an interrupted compatible run |
-| `--replicates` | total matched control sets; production uses 1001, from which Phi-SFS draws $B_0$ and takes every other QC-passing set as a null |
+| `--replicates` | total matched control sets; production uses 500 (the CLI default is still 1001), from which Phi-SFS draws $B_0$ and takes every other QC-passing set as a null |
 | `--restarts` | optimization restarts per control set |
 | `--disjoint-replicates` | prevent reuse of a control SNP between published sets |
 | `--seed` | matching random seed |
@@ -331,7 +331,7 @@ python -m normalize_tes.phi_sfs \
   -A "$A_TYPE" \
   -B "$B_TYPE" \
   --reference-seed 1002 \
-  --min-null-replicates 900 \
+  --min-null-replicates 450 \
   --output "$PHI"
 ```
 
@@ -345,7 +345,7 @@ python -m normalize_tes.phi_sfs \
 | `-B`, `--b-type` | control type; currently `SNP` only |
 | `--reference-seed` | seed, combined with the target digest, for drawing $B_0$ uniformly from the QC-passing sets; default 1002 |
 | `--reference-replicate` | optional explicit $B_0$ replicate ID, overriding the draw |
-| `--min-null-replicates` | floor on $R$: every QC-passing non-reference set is a null, and the run fails if fewer than this pass; default 900 |
+| `--min-null-replicates` | floor on $R$: every QC-passing non-reference set is a null, and the run fails if fewer than this pass; production uses 450; the CLI default is 900, which a 500-set bundle cannot meet |
 | `--reference-sensitivity` | optionally repeat calibration with $N$ alternative references, the next $N$ sets of the same seeded permutation; default 0 |
 | `--max-null-replicates` | optionally fix $R=N$: $B_0$ is the first QC-passing set of the seeded permutation and the nulls are the next $N$; fails if fewer than $N+1$ pass; cannot be combined with `--reference-replicate` or `--reference-sensitivity`; default unset, meaning every QC-passing set |
 | `--asymmetric-polarity-null`, `--no-asymmetric-polarity-null` | hard-orient A and every null by one Bernoulli-$q$ draw per site, keeping $B_0$ a mixture; off by default, when A, $B_0$ and every null are posterior mixtures |
@@ -474,9 +474,10 @@ tests at $\alpha=0.05$. That is valid but conservative, and it held under
 sequential depletion wherever tests had at least 19 nulls (see
 [All-mixture and depletion simulation](#all-mixture-and-depletion-simulation)).
 It has **not yet** been run on the unpolarised or reference-haplotype replicates,
-where the former design failed. That test, and the production-matcher negative
-control, are blocking items in
-[REMAINING_VALIDATION_PROPOSAL.md](docs/REMAINING_VALIDATION_PROPOSAL.md).
+where the former design failed. That test (V1) is a blocking item in
+[REMAINING_VALIDATION_PROPOSAL.md](docs/REMAINING_VALIDATION_PROPOSAL.md). The
+production-matcher negative control (V6) has passed; see
+[Production negative control](#production-negative-control).
 
 **Option: Bernoulli-$q$ hard orientation.** With `--asymmetric-polarity-null`, A and
 every $B_i$ are hard-oriented by one Bernoulli-$q$ draw per site, and $B_0$ stays a
@@ -503,8 +504,12 @@ sampling floor separately for every focal category rather than comparing raw
    reference uniform and SFS-blind among the accepted sets. It does not make the
    depleted sets identically distributed, and it does not show that the
    $A$-versus-$B_0$ comparison is exchangeable with the $B_i$-versus-$B_0$
-   comparisons; that remains an open validation item
-   ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 7). All sets use the shared samples,
+   comparisons ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 7). There is no
+   separate study of that point. The real-data negative control (V6) tests null
+   calibration end to end, V4's drift criterion tests whether set order changes
+   the spectrum, and V5's reference sensitivity tests the choice of $B_0$ (see
+   [REMAINING_VALIDATION_PROPOSAL.md](docs/REMAINING_VALIDATION_PROPOSAL.md),
+   V7). All sets use the shared samples,
    callability, and data-quality rules, with the single polarity rule above.
    The focal-age bootstrap resamples sites iid. This adopts the Poisson-random-field
    approximation that local LD averages out for genome-wide control pools containing
@@ -531,12 +536,19 @@ sampling floor separately for every focal category rather than comparing raw
    \mathbf{1}\!\left(\Phi_i^0\ge \Phi_{\mathrm{obs}}\right)}{R+1}.
    $$
 
-The matcher publishes 1001 disjoint sets. Phi-SFS draws the mixture-polarized $B_0$
+Production publishes 500 disjoint sets. A 1,001-set run on the in-gene category
+(M = 4,067) passed every matching criterion but drifted: sets matched after
+about 800 had depleted the pool, and their spectra moved away from the earlier
+sets. Its first 500 sets showed no drift, so validation (V4 and V5, Amendment A in
+[REMAINING_VALIDATION_PROPOSAL.md](docs/REMAINING_VALIDATION_PROPOSAL.md)) covers
+500 sets. A larger category depletes the pool faster, so drift may start earlier;
+every category must pass the drift check in
+[Verify a production run](#verify-a-production-run). Phi-SFS draws the mixture-polarized $B_0$
 uniformly from the
 sets that pass matching QC, with a seed derived from `--reference-seed` and the
 target digest, and uses every other QC-passing set as a null, so $R$ is whatever
 passes QC and may differ between categories. A floor fixed before the run
-(`--min-null-replicates`, 900 by default) guards against a coarse P-value. The
+(`--min-null-replicates`, 450 in production) guards against a coarse P-value. The
 add-one P-value is valid for any such $R$. QC is computed only from age matching and does not directly inspect the
 SFS. However, because allele age and allele frequency are related, selection on
 age-matching QC is not guaranteed to be neutral with respect to the resulting SFS.
@@ -550,9 +562,9 @@ matched first, from the undepleted pool, and so is not a typical set; it can sti
 be drawn as $B_0$ or used as a null like any other QC-passing set. Within the
 calculation, $B_0$ differs from the other sets in being held fixed as the reference.
 
-With $R$ near 1000 the minimum attainable P-value is about $1/(R+1)\approx10^{-3}$. Plot one equal-size point per focal category at
+With $R$ near 500 the minimum attainable P-value is about $1/(R+1)\approx2\times10^{-3}$. Plot one equal-size point per focal category at
 $Z_A$, color it by $-\log_{10}P_A$, and show its category-specific null Z-score
-distribution in gray. Cap the displayed color scale at $\log_{10}(R+1)$, about 3.
+distribution in gray. Cap the displayed color scale at $\log_{10}(R+1)$, about 2.7.
 Because $Z_A$ grows with $M$, this plot shows test strength, not effect size; do not
 compare $Z_A$ across categories of different $M$ as an effect size.
 
@@ -590,6 +602,26 @@ SNP focal sets only. TE focal sets now share the SNP polarity and age constructi
 so the pilot no longer misses a TE-specific polarity path. It still cannot test
 properties specific to TE sites, such as TE genotyping error or how the ARG handles
 TE sites ([review 12](docs/CODE_REVIEW_ROUND12.md), finding 2).
+
+#### Production negative control
+
+Validation item V6 replaced the pilot with 300 independent SNP-versus-SNP tests
+through the production matcher and the all-mixture design. Each test sampled its
+own focal set of 4,000 SNPs from the genome-wide pool, excluded those sites from
+its own controls, matched 110 disjoint sets with 3 restarts and its own seed, and
+ran Phi-SFS with exactly $R=99$ nulls (`--max-null-replicates 99`).
+
+All 300 tests produced 99 valid nulls, and every bundle passed matching QC on all
+110 sets. Eleven of 300 rejected at $\alpha=0.05$ (0.037). The one-sided 95%
+Clopper–Pearson upper bound is 0.060, inside the prespecified limit of 0.10 (at
+most 21 rejections). P-values were close to uniform: decile counts ranged from 23
+to 38 against 30 expected. Rejections were 1–3 in each block of 50 tests, and 2–5%
+by the position of $B_0$ in matcher order. Focal sets were not forced to be
+disjoint; two sets shared at most 7 of their 4,000 sites.
+
+The result is conditional on this genome and candidate pool, and on $M=4{,}000$.
+Like the pilot, it uses SNP focal sets only. The report is
+`results/v6_report`, written by `tools/v6_report.py`.
 
 **Between-category contrasts are not currently supported.** The repository retains
 `normalize_tes.phi_contrast` as experimental code, but its random pairing of category
@@ -652,7 +684,7 @@ Build the target and match controls:
 sbatch --export=ALL,STORE="$STORE",TARGET="$TARGET",A_POSITIONS="$A_POSITIONS",\
 OUTPUT="$MATCHES",CANDIDATE_ROWS="$CANDIDATES",WORK_DIR="$WORK_DIR",\
 VCF_ELIGIBILITY="$VCF_ELIGIBILITY",A_TYPE="$A_TYPE",\
-REPLICATES=1001,RESTARTS=3,SEED=1002,SCRATCH_HEADROOM_GB=32 \
+REPLICATES=500,RESTARTS=3,SEED=1002,SCRATCH_HEADROOM_GB=32 \
   slurm/run_bootstrap_matching.sbatch
 ```
 
@@ -687,7 +719,8 @@ This runs either TE-versus-SNP or SNP-versus-SNP according to `A_TYPE`; `B_TYPE`
 is currently constrained to `SNP`, matching the command-line interface. The launcher
 defaults to `ASYMMETRIC_POLARITY_NULL=false`, the all-mixture design. Set
 `ASYMMETRIC_POLARITY_NULL=true` (with `POLARITY_IMPUTATION_SEED`, default 2001) for
-the Bernoulli-$q$ option.
+the Bernoulli-$q$ option. Set `REFERENCE_SENSITIVITY=N` to pass
+`--reference-sensitivity N`; the default is 0.
 
 Scheduler allocations, measured resource use, scratch sizing, and parameter evidence
 are recorded in [BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
@@ -733,7 +766,7 @@ while IFS=$'\t' read -r label positions target matches work seed; do
     --export=ALL,PROJECT="$PROJECT",STORE="$STORE",TARGET="$target",\
 A_POSITIONS="$positions",A_TYPE=TE,OUTPUT="$matches",CANDIDATE_ROWS="$CANDIDATES",\
 VCF_ELIGIBILITY="$VCF_ELIGIBILITY",WORK_DIR="$work",\
-REPLICATES=1001,RESTARTS=3,SEED="$seed",SCRATCH_HEADROOM_GB=32 \
+REPLICATES=500,RESTARTS=3,SEED="$seed",SCRATCH_HEADROOM_GB=32 \
     slurm/run_bootstrap_matching.sbatch)
   match_job=${match_job%%;*}
 
@@ -757,7 +790,7 @@ Before accepting the results:
    bound to `STORE` and the intended VCF eligibility artifact.
 3. Confirm the target records the intended `a_type`, the eligibility artifact, and
    plausible kept/removed counts, and records no `te_polarity` mask.
-4. Confirm the matcher published 1001 identically generated sets in disjoint mode,
+4. Confirm the matcher published 500 identically generated sets in disjoint mode,
    maximum control reuse is one, every overlap with $B_0$ is zero, and all sets used
    in Phi-SFS pass matching QC.
 5. Confirm the `phi-sfs-wasserstein-v3` result records the intended A/B types,
@@ -765,6 +798,19 @@ Before accepting the results:
    Bernoulli option, `bernoulli-q-hard-vs-posterior-mixture` with its seed and
    algorithm), identical A and null-left polarity rules, exactly equal site count $M$, reference replicate, null count,
    raw distance, null mean and sample SD, Z-score, exceedances, and add-one P-value.
+6. Confirm the category's matched sets do not drift with matching order. Run the
+   V4 report on the bundle and its Phi-SFS output, on a compute node:
+
+   ```bash
+   python -m tools.v4_depletion_report --matches "$MATCHES" --phi "$PHI" \
+     --min-qc-passes 451 --output "$REPORT"
+   ```
+
+   Every row of `criteria.csv` must pass. In particular, each set's distance from
+   the pooled spectrum must have $|\rho|<0.1$ with replicate order, and the first
+   and last quarters must differ by $|\mathrm{SMD}|<0.2$. Validation covered
+   500 sets at $M=4{,}067$ only; a larger category may fail, and its result should
+   not be used until it passes.
 
 The exact acceptance criteria and the tests supporting them are in
 [BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).

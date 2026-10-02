@@ -16,9 +16,11 @@
 # reaching mkdir. Move the logs afterwards if you want them filed away.
 
 # The canonical production launcher for bootstrap-target control matching.
-# It requires mutually disjoint controls across all 1001 sets. Phi-SFS draws B0
+# It requires mutually disjoint controls across all 500 sets. Phi-SFS draws B0
 # from the QC-passing sets and uses every other QC-passing set as a null, so R
-# is whatever passes QC (at least 900 by default). The matcher fails before
+# is whatever passes QC (the Phi-SFS launcher requires at least 450). Validation
+# (V4, Amendment A) covers 500 sets at M = 4,067: a 1,001-set run drifted in its
+# last 200 sets as disjoint matching depleted the pool. The matcher fails before
 # creating replicate state when the candidate universe cannot hold
 # REPLICATES x target-size unique SNPs, or when any target age stratum holds
 # less than REPLICATES x the target's age mass there; it never silently falls
@@ -39,7 +41,7 @@
 #   CANDIDATE_ROWS   .npy from normalize_tes.build_candidate_rows       [required]
 #   CANDIDATE_REPORT provenance JSON (default: CANDIDATE_ROWS.json)
 #   WORK_DIR         durable resume directory       (default: OUTPUT.work)
-#   REPLICATES       control sets to publish                   (default: 1001)
+#   REPLICATES       control sets to publish                   (default: 500)
 #   RESTARTS         stratified restarts per replicate            (default: 3)
 #   SEED             global seed                                (default: 1002)
 #   INIT_MODE        median|mass|random initial set per restart (default: median)
@@ -65,8 +67,9 @@
 # Measured on the 75-draw production store (18.2 GB) at this allocation, for a
 # 4,067-site target with 100 replicates x 3 restarts: 2 h 12 m wall clock and
 # 37.7 GiB peak RSS (SLURM job 37821602). Scaled linearly from that single
-# measurement (unverified at this size), the 1001-set default needs about 22 h
-# for the same target; the 36 h request leaves room for variation. Target
+# measurement, a 1001-set run was predicted to need about 22 h; the V4 run on
+# that target took 29 h (job 39287438). The 500-set default should need about
+# half that (unmeasured); the 36 h request leaves room for variation. Target
 # construction is the other memory peak: 16.0 GB for a
 # 35,512-site target. Scale --time roughly linearly in target size and replicate
 # count, and keep --mem at 96G unless a measured figure says otherwise.
@@ -84,7 +87,7 @@ PROJECT="${PROJECT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.."
 : "${VCF_ELIGIBILITY:?set VCF_ELIGIBILITY to the shared eligibility artifact}"
 : "${TMPDIR:?Farm must provide per-job TMPDIR under /local/scratch}"
 WORK_DIR="${WORK_DIR:-${OUTPUT}.work}"
-REPLICATES="${REPLICATES:-1001}"
+REPLICATES="${REPLICATES:-500}"
 RESTARTS="${RESTARTS:-3}"
 SEED="${SEED:-1002}"
 INIT_MODE="${INIT_MODE:-median}"
