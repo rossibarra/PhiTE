@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.9.0 — 2026-10-02
+
+Releases rc2's design after the blocking validation in
+`docs/REMAINING_VALIDATION_PROPOSAL.md` (V1, V2, V4, V5, V6, V9, V10) passed; see
+`docs/VALIDATION.md`.
+
 - The matcher publishes 500 sets by default (was 1001), and Phi-SFS requires at
   least 450 QC-passing nulls by default (was 900). A 1,001-set run drifted in its
   last ~200 sets as disjoint matching depleted the pool; validation covers 500

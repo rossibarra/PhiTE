@@ -1,4 +1,4 @@
-# PhiTE v0.9.0-rc2
+# PhiTE v0.9.0
 
 PhiTE asks whether a focal set of variants, usually a category of transposable
 elements (TEs), has a different site-frequency spectrum (SFS) from neutral SNPs of

@@ -340,8 +340,8 @@ to match production: `bootstrap_target_matcher --replicates` from 1001 to 500 an
 `phi_sfs --min-null-replicates` from 900 to 450. Every validation run passed these
 values explicitly, so no result depends on the defaults. The release commit's
 `normalize_tes/` therefore differs from rc2's in these two default values (and
-their help text) only; `git diff v0.9.0-rc2 <release> -- normalize_tes/` shows
-exactly that.
+their help text) and in the version string (`0.9.0-rc2` to `0.9.0`) only;
+`git diff v0.9.0-rc2 <release> -- normalize_tes/` shows exactly that.
 
 ## Order
 
