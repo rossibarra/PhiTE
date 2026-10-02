@@ -99,12 +99,12 @@ produces, so only one step of [README.md](README.md) has to have been run:
 
 | main workflow step | needed here |
 |---|---|
-| [1. Build the interval store](README.md#1-build-the-interval-store) | **yes** — the only prerequisite |
+| [1. Build the interval store](README.md#run) | **yes** — the only prerequisite |
 | 2. Candidate control universe | no |
 | 3. Preliminary TE target | no |
 | 4. TE polarity mask | no |
 | 5. Final target and matched controls | no |
-| [6. Ancestral-state table](README.md#6-build-the-ancestral-state-table) | only for the approximate `--ancestral-table` mode below |
+| [6. Ancestral-state table](README.md#run) | only for the approximate `--ancestral-table` mode below |
 | 7. Phi-SFS | no |
 
 If you have no store yet, build one as the main README describes — it needs the
