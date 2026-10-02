@@ -1,4 +1,4 @@
-// Forward TE simulations for normalizeTE validation.
+// Forward TE simulations for PhiTE validation.
 //
 // Requires SLiM 5.x.  Functional (m2) and disabled (m3) alleles with the
 // same te_id are merged into one insertion-presence allele in the final
@@ -404,7 +404,7 @@ s_finish 100000000 late()
         "position_min_attempts\t" + POSITION_MIN_ATTEMPTS);
 
     treeMetadata = Dictionary(
-        "schema_version", "normalizeTE-te-simulation-v1",
+        "schema_version", "PhiTE-te-simulation-v1",
         "random_seed", RANDOM_SEED,
         "movement_mode", MOVEMENT_MODE,
         "population_size", POPULATION_SIZE,

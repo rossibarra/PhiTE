@@ -12,6 +12,9 @@
 
 # Builds the TE polarity mask consumed by normalize_tes.te_age_target.
 #
+# Diagnostic only. Production TEs are polarized by the ARG posterior like SNPs,
+# and the matcher and Phi-SFS refuse a target built with this mask.
+#
 # For every TE site in TARGET, records which posterior draws called the
 # insertion allele derived, as biology says it almost always is. A draw that
 # called it ancestral placed the mutation on a different branch of the ARG and

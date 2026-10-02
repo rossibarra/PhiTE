@@ -14,12 +14,13 @@
 # control sets B, and calibrate its Wasserstein distance against B-to-B null
 # distances.
 #
-# Polarity comes from two sources and neither is the VCF. TE sites are polarized
-# by biology -- a TE insertion is the derived state -- and SNPs in either role by the
-# ARG-derived table from slurm/run_ancestral_table.sbatch, applied as a posterior
-# weighted mixture rather than a majority call. Running this against an
-# unpolarized VCF as though REF were ancestral would mis-polarize about a third
-# of all sites, which is why --ancestral-table is required.
+# Polarity never comes from the VCF. Every site, TE and SNP alike, is polarized
+# by the ARG posterior, and by default A, B0 and every null-left set are
+# q-mixtures, so the observed and null comparisons are built identically.
+# ASYMMETRIC_POLARITY_NULL=true instead hard-orients A and every null-left set
+# by a reproducible Bernoulli(q) draw. Running this against an unpolarized VCF
+# as though REF were ancestral would mis-polarize about a third of all sites,
+# which is why --ancestral-table is required.
 #
 # The VCF must cover every requested site: the TE target plus every control SNP
 # across all sets. Those span the genome -- for the in-gene target, 94% of the
@@ -43,8 +44,13 @@
 #   OUTPUT      results directory to publish; must not exist      [required]
 #   A_TYPE      TE|SNP for focal set A                                  (TE)
 #   B_TYPE      SNP for matched control sets B                          (SNP)
-#   REFERENCE_REPLICATE  prespecified B0 replicate ID                     (0)
-#   MIN_NULL_REPLICATES  minimum QC-passing null sets                  (1000)
+#   REFERENCE_REPLICATE  B0 replicate ID; unset draws B0 at random   (unset)
+#   REFERENCE_SEED   seed for the B0 draw, with the target digest   (1002)
+#   MIN_NULL_REPLICATES  floor on R, the number of QC-passing nulls    (450)
+#   MAX_NULL_REPLICATES  fix R at exactly N nulls from the seeded order  (unset)
+#   REFERENCE_SENSITIVITY  rerun calibration with N alternative B0s        (0)
+#   ASYMMETRIC_POLARITY_NULL  true for Bernoulli-q left vs mixture B0 (false)
+#   POLARITY_IMPUTATION_SEED  coordinate-keyed Bernoulli-q seed         (2001)
 #   HETEROZYGOUS  error|missing for diploid calls                 (error)
 #
 # The scan is the dominant cost and is polarity-independent: it reads the VCF
@@ -64,8 +70,50 @@ PROJECT="${PROJECT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.."
 HETEROZYGOUS="${HETEROZYGOUS:-error}"
 A_TYPE="${A_TYPE:-TE}"
 B_TYPE="${B_TYPE:-SNP}"
-REFERENCE_REPLICATE="${REFERENCE_REPLICATE:-0}"
-MIN_NULL_REPLICATES="${MIN_NULL_REPLICATES:-1000}"
+REFERENCE_REPLICATE="${REFERENCE_REPLICATE:-}"
+REFERENCE_SEED="${REFERENCE_SEED:-1002}"
+MIN_NULL_REPLICATES="${MIN_NULL_REPLICATES:-450}"
+MAX_NULL_REPLICATES="${MAX_NULL_REPLICATES:-}"
+REFERENCE_SENSITIVITY="${REFERENCE_SENSITIVITY:-0}"
+ASYMMETRIC_POLARITY_NULL="${ASYMMETRIC_POLARITY_NULL:-false}"
+POLARITY_IMPUTATION_SEED="${POLARITY_IMPUTATION_SEED:-2001}"
+reference_option=()
+if [[ -n "$REFERENCE_REPLICATE" ]]; then
+    reference_option=(--reference-replicate "$REFERENCE_REPLICATE")
+fi
+null_cap_option=()
+if [[ -n "$MAX_NULL_REPLICATES" ]]; then
+    if [[ ! "$MAX_NULL_REPLICATES" =~ ^[0-9]+$ ]]; then
+        echo "MAX_NULL_REPLICATES must be a positive integer" >&2
+        exit 1
+    fi
+    null_cap_option=(--max-null-replicates "$MAX_NULL_REPLICATES")
+fi
+if [[ ! "$REFERENCE_SENSITIVITY" =~ ^[0-9]+$ ]]; then
+    echo "REFERENCE_SENSITIVITY must be a non-negative integer" >&2
+    exit 1
+fi
+case "$ASYMMETRIC_POLARITY_NULL" in
+    true)
+        if [[ ! "$POLARITY_IMPUTATION_SEED" =~ ^-?[0-9]+$ ]]; then
+            echo "POLARITY_IMPUTATION_SEED must be an integer" >&2
+            exit 1
+        fi
+        polarity_option=(
+            --asymmetric-polarity-null
+            --polarity-imputation-seed "$POLARITY_IMPUTATION_SEED"
+        )
+        polarity_description="Bernoulli-q hard left versus posterior-mixture B0 (seed $POLARITY_IMPUTATION_SEED)"
+        ;;
+    false)
+        polarity_option=(--no-asymmetric-polarity-null)
+        polarity_description="posterior-mixture left versus posterior-mixture B0"
+        ;;
+    *)
+        echo "ASYMMETRIC_POLARITY_NULL must be exactly true or false" >&2
+        exit 1
+        ;;
+esac
 cd "$PROJECT"
 # Batch jobs get a non-login shell, where `module` does not exist.
 . "$PROJECT/slurm/slurm_conda_bootstrap.sh"
@@ -80,6 +128,7 @@ echo "matches    $MATCHES"
 echo "ancestral  $ANCESTRAL"
 echo "vcf        $VCF"
 echo "comparison $A_TYPE versus $B_TYPE"
+echo "null       $polarity_description"
 date
 python -m normalize_tes.phi_sfs \
     --target "$TARGET" \
@@ -89,7 +138,11 @@ python -m normalize_tes.phi_sfs \
     --output "$OUTPUT" \
     -A "$A_TYPE" \
     -B "$B_TYPE" \
-    --reference-replicate "$REFERENCE_REPLICATE" \
+    "${polarity_option[@]}" \
+    "${reference_option[@]}" \
+    "${null_cap_option[@]}" \
+    --reference-seed "$REFERENCE_SEED" \
+    --reference-sensitivity "$REFERENCE_SENSITIVITY" \
     --min-null-replicates "$MIN_NULL_REPLICATES" \
     --heterozygous "$HETEROZYGOUS"
 date

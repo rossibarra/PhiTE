@@ -18,7 +18,7 @@ from .snp_age_dataset import load_native_position_list
 from .snp_age_store import is_interval_store, open_snp_age_store, store_schema
 from .snp_position_resolution import resolve_native_position_requests
 from .release_provenance import software_provenance
-from .vcf_eligibility import load_eligible_rows
+from .vcf_eligibility import load_eligibility
 
 
 @dataclass(frozen=True)
@@ -429,10 +429,11 @@ def load_polarity_selection(
 
     keep_sites = np.ones(rows.size, dtype=bool)
     if max_flipped_fraction is not None:
-        # Sites with no draw at all carry no evidence of being flipped, so the
-        # threshold cannot speak to them; they are left to the usual coverage
-        # handling rather than discarded here.
-        keep_sites = (usable == 0) | (flipped_fraction <= max_flipped_fraction)
+        # Retention requires positive evidence about orientation. A site with
+        # no usable draw cannot meet an at-least-50%-derived rule and is removed
+        # rather than being treated as if zero observed disagreement were
+        # evidence of agreement.
+        keep_sites = (usable > 0) & (flipped_fraction <= max_flipped_fraction)
 
     keep_draws = present & agrees
     no_agreeing = keep_draws.sum(axis=1) == 0
@@ -447,7 +448,9 @@ def load_polarity_selection(
             float(flipped.sum() / usable.sum()) if usable.sum() else 0.0
         ),
         "sites_with_any_flipped_draw": int((flipped > 0).sum()),
-        "sites_with_no_agreeing_draw": int(no_agreeing.sum()),
+        "sites_with_no_usable_draw": int((usable == 0).sum()),
+        "sites_with_no_agreeing_draw_total": int(no_agreeing.sum()),
+        "sites_with_no_agreeing_draw": int((no_agreeing & keep_sites).sum()),
         "max_flipped_fraction": max_flipped_fraction,
         "sites_discarded_by_threshold": int((~keep_sites).sum()),
         "sites_kept": int(keep_sites.sum()),
@@ -625,11 +628,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--te-polarity-mask", type=Path,
         help="directory from normalize_tes.build_te_polarity_mask. Each TE site's age CDF "
              "is then built only from draws that polarized it in agreement with "
-             "biology, because a draw that called the insertion ancestral placed "
-             "the mutation on a different branch and recorded that branch's age",
+             "biology. Diagnostic only: the matcher and Phi-SFS refuse a masked "
+             "target, because TEs are polarized by the ARG like their SNP controls",
     )
     parser.add_argument(
-        "--a-type", choices=("TE", "SNP"), default="TE",
+        "-A", "--a-type", choices=("TE", "SNP"), default="TE",
         help="variant type of target A (default: TE). SNP uses the full ARG "
              "posterior orientation in the shared VCF eligibility artifact",
     )
@@ -642,9 +645,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-flipped-fraction", type=float, default=None,
         help="discard any TE whose flipped fraction, among draws with data for "
-             "it, exceeds this. Requires --te-polarity-mask. A TE the ARG mostly "
-             "disagrees with is unreliable whether the cause is inference failure "
-             "or a genuine fixed-then-deleted insertion",
+             "it, exceeds this. Requires --te-polarity-mask. Diagnostic only: the "
+             "matcher and Phi-SFS refuse a target filtered this way",
     )
     parser.add_argument("--seed", type=int, default=None,
                         help="seed for the bootstrap resampling")
@@ -733,10 +735,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     eligibility_report: dict | None = None
     if args.vcf_eligibility is not None:
-        eligible_rows = load_eligible_rows(
+        loaded_eligibility = load_eligibility(
             args.vcf_eligibility, store, variant_type=args.a_type,
             expected_min_callable=20,
         )
+        eligible_rows = loaded_eligibility.rows
         eligible = target_eligibility_mask(included_rows, eligible_rows)
         before = int(eligible.size)
         if not eligible.any():
@@ -759,6 +762,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "sites_before": before,
             "sites_removed": int((~eligible).sum()),
             "sites_kept": int(eligible.sum()),
+            "identity": loaded_eligibility.identity,
         }
         print(
             f"VCF eligibility {eligibility_report['sites_removed']:,} of "

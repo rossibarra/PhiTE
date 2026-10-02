@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_NAME = "normalizeTE"
-PROJECT_VERSION = "0.7.0"
+PROJECT_NAME = "PhiTE"
+PROJECT_VERSION = "0.9.0-rc2"
 
 
 def _git(repo_root: Path, *arguments: str) -> str | None:

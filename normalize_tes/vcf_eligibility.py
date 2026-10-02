@@ -12,9 +12,7 @@ by their respective upstream/downstream components.
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -25,11 +23,17 @@ import numpy as np
 
 from .release_provenance import software_provenance
 from .snp_age_store import open_snp_age_store, store_schema
+from .vcf_io import (
+    COMPRESSED_SUFFIXES,
+    _HashingStream,
+    _open_vcf,
+    decode_inbred_genotype,
+    drain,
+)
 
 
 SCHEMA_VERSION = "vcf-eligibility-v1"
 DEFAULT_MIN_CALLABLE = 20
-COMPRESSED_SUFFIXES = (".gz", ".bgz", ".bgzf")
 
 
 def _sha256_array(values: np.ndarray) -> str:
@@ -39,58 +43,6 @@ def _sha256_array(values: np.ndarray) -> str:
     digest.update(str(array.shape).encode("utf-8"))
     digest.update(array.tobytes())
     return digest.hexdigest()
-
-
-class _HashingStream(io.RawIOBase):
-    """Digest compressed input bytes while the text decoder consumes them."""
-
-    def __init__(self, handle):
-        self._handle = handle
-        self.digest = hashlib.sha256()
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, buffer) -> int:
-        count = self._handle.readinto(buffer)
-        if count:
-            self.digest.update(memoryview(buffer)[:count])
-        return count
-
-    def close(self) -> None:
-        try:
-            self._handle.close()
-        finally:
-            super().close()
-
-
-def _open_vcf(path: Path):
-    hashing = _HashingStream(path.open("rb"))
-    buffered = io.BufferedReader(hashing, buffer_size=1 << 20)
-    stream = (
-        gzip.GzipFile(fileobj=buffered)
-        if path.suffix.lower() in COMPRESSED_SUFFIXES
-        else buffered
-    )
-    return io.TextIOWrapper(stream, encoding="utf-8"), hashing, buffered
-
-
-def decode_inbred_genotype(gt: str, heterozygous: str) -> int | None | str:
-    """Return 0/1, ``None`` for missing, or an eligibility failure reason."""
-    alleles = gt.replace("|", "/").split("/")
-    if not alleles or any(allele == "." for allele in alleles):
-        return None
-    values: list[int] = []
-    for allele in alleles:
-        if not allele.isdigit():
-            return "invalid_genotype"
-        value = int(allele)
-        if value not in (0, 1):
-            return "non_biallelic_genotype"
-        values.append(value)
-    if len(set(values)) > 1:
-        return None if heterozygous == "missing" else "heterozygous_genotype"
-    return values[0]
 
 
 @dataclass(frozen=True)
@@ -114,6 +66,41 @@ class LoadedEligibility:
     callable_counts: np.ndarray
     p_alt_derived: np.ndarray | None
     metadata: dict
+    identity: dict
+
+
+_MISSING = object()
+
+
+def eligibility_identity(metadata: dict) -> dict:
+    """Return the content-addressed identity of a loaded eligibility mask.
+
+    Callers (the target and candidate-row reports) record this dict verbatim
+    so that a downstream consumer can require an exact match against it,
+    binding the artifact by what it contains rather than by where it was
+    resolved from. Raises ``ValueError`` if any of the required fields is
+    absent from ``metadata`` (or, for the array digests, from its nested
+    ``array_sha256``).
+    """
+    array_hashes = metadata.get("array_sha256")
+    if not isinstance(array_hashes, dict):
+        array_hashes = {}
+    fields = {
+        "vcf_sha256": metadata.get("vcf_sha256", _MISSING),
+        "heterozygous": metadata.get("heterozygous", _MISSING),
+        "min_callable": metadata.get("min_callable", _MISSING),
+        "store_content_sha256": metadata.get("store_content_sha256", _MISSING),
+        "row_indices_sha256": array_hashes.get("row_indices", _MISSING),
+        "snp_row_indices_sha256": array_hashes.get("snp_row_indices", _MISSING),
+        "p_alt_derived_sha256": array_hashes.get("p_alt_derived", _MISSING),
+    }
+    missing = [key for key, value in fields.items() if value is _MISSING or value is None]
+    if missing:
+        raise ValueError(
+            "eligibility metadata is missing required identity field(s): "
+            + ", ".join(missing)
+        )
+    return fields
 
 
 def _chromosome_map(store: object) -> dict[str, tuple[int, int]]:
@@ -173,6 +160,7 @@ def scan_vcf(
     q_values: list[float] = []
     seen: set[int] = set()
     reasons: dict[str, int] = {}
+    snp_reasons: dict[str, int] = {}
     records = relevant = 0
     genotype_cache: dict[str, int | None | str] = {}
     handle, hashing, buffered = _open_vcf(Path(vcf))
@@ -181,12 +169,16 @@ def scan_vcf(
             if raw.startswith("#"):
                 continue
             records += 1
-            fields = raw.rstrip("\n").split("\t")
-            if len(fields) < 2:
-                raise ValueError(f"{vcf}:{line_number}: malformed VCF record")
-            chrom = fields[0]
+            # Only CHROM and POS are parsed for a record that turns out not to
+            # be in the catalog. Splitting every sample column of every record
+            # dominates scan time on a sample-rich VCF; a catalog lookup on two
+            # fields is cheap and rejects most records before that cost.
             try:
-                position = int(fields[1])
+                chrom, position_text, rest = raw.split("\t", 2)
+            except ValueError:
+                raise ValueError(f"{vcf}:{line_number}: malformed VCF record") from None
+            try:
+                position = int(position_text)
             except ValueError as error:
                 raise ValueError(f"{vcf}:{line_number}: invalid POS") from error
             chrom_info = chromosomes.get(chrom)
@@ -206,24 +198,27 @@ def scan_vcf(
             if not store_eligible[row]:
                 reasons["store_ineligible"] = reasons.get("store_ineligible", 0) + 1
                 continue
-            if len(fields) < 10:
+            # ID, REF, ALT, QUAL, FILTER, INFO, FORMAT, then sample columns.
+            rest_fields = rest.rstrip("\n").split("\t")
+            if len(rest_fields) < 8:
                 reasons["missing_samples_or_format"] = (
                     reasons.get("missing_samples_or_format", 0) + 1
                 )
                 continue
-            if "," in fields[4]:
+            ref, alt, formats = rest_fields[1], rest_fields[2], rest_fields[6]
+            if "," in alt:
                 reasons["multiallelic_record"] = (
                     reasons.get("multiallelic_record", 0) + 1
                 )
                 continue
-            format_fields = fields[8].split(":")
+            format_fields = formats.split(":")
             if "GT" not in format_fields:
                 reasons["missing_gt"] = reasons.get("missing_gt", 0) + 1
                 continue
             gt_index = format_fields.index("GT")
             alt_count = callable_count = 0
             failure: str | None = None
-            for sample in fields[9:]:
+            for sample in rest_fields[7:]:
                 parts = sample.split(":")
                 gt = parts[gt_index] if gt_index < len(parts) else "."
                 allele = genotype_cache.get(gt)
@@ -249,10 +244,12 @@ def scan_vcf(
             alt_counts.append(alt_count)
             callable_counts.append(callable_count)
             if ancestral_counts is not None:
-                ref, alt = fields[3], fields[4]
+                # These two reasons remove a row only from the SNP-orientable
+                # subset; the row stays callable and remains in row_indices.npy,
+                # so they are counted separately from `reasons` above.
                 if ref not in "ACGT" or alt not in "ACGT":
-                    reasons["snp_non_acgt_alleles"] = (
-                        reasons.get("snp_non_acgt_alleles", 0) + 1
+                    snp_reasons["snp_non_acgt_alleles"] = (
+                        snp_reasons.get("snp_non_acgt_alleles", 0) + 1
                     )
                     continue
                 counts = ancestral_counts[row]
@@ -266,17 +263,13 @@ def scan_vcf(
                 alt_calls = int(counts["ACGT".index(alt)])
                 oriented = ref_calls + alt_calls
                 if oriented == 0:
-                    reasons["snp_no_usable_orientation"] = (
-                        reasons.get("snp_no_usable_orientation", 0) + 1
+                    snp_reasons["snp_no_usable_orientation"] = (
+                        snp_reasons.get("snp_no_usable_orientation", 0) + 1
                     )
                     continue
                 snp_rows.append(row)
                 q_values.append(ref_calls / oriented)
-        # Text and gzip layers can stop before the buffered reader has consumed
-        # the physical EOF. Drain it while still open so the digest always
-        # covers every compressed input byte, including trailing gzip members.
-        while buffered.read(1 << 20):
-            pass
+        drain(buffered)
     finally:
         handle.close()
     digest = hashing.digest.hexdigest()
@@ -302,7 +295,14 @@ def scan_vcf(
         "store_catalog_records": relevant,
         "eligible_rows": int(row_array.size),
         "snp_orientable_rows": int(snp_array.size),
+        # `excluded_by_reason` accounts only for rows dropped from the
+        # callable mask: store_catalog_records - sum(excluded_by_reason) ==
+        # eligible_rows. `snp_excluded_by_reason` accounts for rows that stay
+        # callable (and remain in row_indices.npy) but are dropped from the
+        # SNP-orientable subset: eligible_rows - sum(snp_excluded_by_reason)
+        # == snp_orientable_rows.
         "excluded_by_reason": reasons,
+        "snp_excluded_by_reason": snp_reasons,
         "store_content_sha256": (getattr(store, "metadata", {}) or {}).get(
             "content_sha256"
         ),
@@ -318,10 +318,17 @@ def scan_vcf(
 def load_ancestral_table(
     table_dir: Path, store: object
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Authenticate and load the ARG ancestral-state counts for SNP q."""
+    """Authenticate and load the ARG ancestral-state counts for site q."""
+    # Imported here: build_ancestral_states imports this module's digest helper.
+    from .build_ancestral_states import SCHEMA_VERSION as ANCESTRAL_SCHEMA_VERSION
+    from .build_ancestral_states import verify_table_arrays
+
     metadata = json.loads((table_dir / "metadata.json").read_text(encoding="utf-8"))
-    if metadata.get("schema_version") != "ancestral-state-counts-v1":
-        raise SystemExit(f"{table_dir}: unsupported ancestral-table schema")
+    if metadata.get("schema_version") != ANCESTRAL_SCHEMA_VERSION:
+        raise SystemExit(
+            f"{table_dir}: unsupported ancestral-table schema "
+            f"{metadata.get('schema_version')!r}; expected {ANCESTRAL_SCHEMA_VERSION!r}"
+        )
     if not metadata.get("complete"):
         raise SystemExit(f"{table_dir}: ancestral table is incomplete")
     if metadata.get("bases") != ["A", "C", "G", "T"]:
@@ -340,6 +347,10 @@ def load_ancestral_table(
         raise SystemExit(f"{table_dir}: ancestral_counts.npy has invalid shape or dtype")
     if present.shape != (n_rows,) or present.dtype.kind != "u":
         raise SystemExit(f"{table_dir}: present_draw_count.npy has invalid shape or dtype")
+    try:
+        verify_table_arrays(table_dir, metadata, counts, present)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     if np.any(counts.sum(axis=1, dtype=np.uint64) > present):
         raise SystemExit(f"{table_dir}: ancestral counts exceed present-draw counts")
     return counts, present, metadata
@@ -412,7 +423,13 @@ def load_eligibility(
     variant_type: str,
     expected_min_callable: int | None = None,
 ) -> LoadedEligibility:
-    """Load authenticated TE-callable or SNP-callable-and-orientable rows."""
+    """Load authenticated callable-and-ARG-orientable rows.
+
+    TE and SNP rows are selected identically: Phi-SFS polarizes a TE from the
+    ARG posterior exactly as it does a SNP, so a TE that no draw orients cannot
+    enter A any more than such a SNP can enter B. `variant_type` is still
+    validated so callers declare which role they are loading.
+    """
     if variant_type not in ("TE", "SNP"):
         raise ValueError("variant_type must be TE or SNP")
     metadata = json.loads((mask_dir / "metadata.json").read_text(encoding="utf-8"))
@@ -462,9 +479,7 @@ def load_eligibility(
     minimum = int(metadata.get("min_callable", -1))
     if np.any(callable_counts < minimum) or np.any(alt_counts > callable_counts):
         raise SystemExit(f"{mask_dir}: stored allele/callability counts are inconsistent")
-    if variant_type == "TE":
-        return LoadedEligibility(rows, alt_counts, callable_counts, None, metadata)
-
+    identity = eligibility_identity(metadata)
     snp_rows = np.load(mask_dir / "snp_row_indices.npy", allow_pickle=False)
     q_values = np.load(mask_dir / "p_alt_derived.npy", allow_pickle=False)
     for name, values in (("snp_row_indices", snp_rows), ("p_alt_derived", q_values)):
@@ -495,6 +510,7 @@ def load_eligibility(
         callable_counts[indices],
         q_values,
         metadata,
+        identity,
     )
 
 

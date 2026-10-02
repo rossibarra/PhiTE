@@ -1,6 +1,6 @@
 # Derived-allele age distributions per individual
 
-A side pipeline of normalizeTE. Given VCFs and the posterior ARG draws, it
+A side pipeline of PhiTE. Given VCFs and the posterior ARG draws, it
 builds, for each individual, the combined distribution of the ages of the
 derived alleles that individual carries.
 
@@ -99,13 +99,12 @@ produces, so only one step of [README.md](README.md) has to have been run:
 
 | main workflow step | needed here |
 |---|---|
-| [1. Build the interval store](README.md#1-build-the-interval-store) | **yes** — the only prerequisite |
-| 2. Candidate control universe | no |
-| 3. Preliminary TE target | no |
-| 4. TE polarity mask | no |
-| 5. Final target and matched controls | no |
-| [6. Ancestral-state table](README.md#6-build-the-ancestral-state-table) | only for the approximate `--ancestral-table` mode below |
-| 7. Phi-SFS | no |
+| [1. Interval store](README.md#run) | **yes** — the only prerequisite |
+| [2. Ancestral-state table](README.md#run) | only for the approximate `--ancestral-table` mode below |
+| 3. VCF eligibility | no |
+| 4. Candidate controls | no |
+| 5. Age target and matched controls | no |
+| 6. Phi-SFS | no |
 
 If you have no store yet, build one as the main README describes — it needs the
 posterior ARG draws and a chromosome-offset file, and it is the expensive step:

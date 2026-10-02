@@ -1,5 +1,188 @@
 # Changelog
 
+## Unreleased
+
+## v0.9.0-rc2 — 2026-09-29
+
+This release candidate replaces rc1's Bernoulli-q asymmetric null with posterior
+TE polarity and an all-mixture null. It is the code against which the blocking
+validation in `docs/REMAINING_VALIDATION_PROPOSAL.md` is run.
+
+### TEs polarized by the ARG posterior; all-mixture null by default
+
+- TE sites are now polarized from the ARG ancestral table exactly as SNPs are.
+  A TE contributes the posterior mixture of its two orientations, and where the
+  ARG calls absence derived it counts at the absence frequency. Biological hard
+  TE polarity, the at-least-50%-derived TE filter, and agreeing-draw TE ages are
+  removed from the production path.
+- Reason: in the neutral dnAging simulations with an ARG inferred without
+  ancestral information, the former TE construction (true-hard A, filter,
+  agreeing-draw ages) rejected 97% of tests at M=4000 (alpha=0.05). A
+  Bernoulli-q A built like the nulls rejected 7%. See the README Polarity
+  section.
+- The Phi-SFS default is now `posterior-mixture-vs-posterior-mixture`: A, B0
+  and every null are q-mixtures. `--asymmetric-polarity-null` is opt-in and
+  hard-orients A (TE or SNP) and every null-left set by the coordinate-keyed
+  Bernoulli(q) draw, keeping B0 a mixture. The Farm launcher defaults to
+  `ASYMMETRIC_POLARITY_NULL=false`. In the original dnAging replicates the
+  all-mixture arms rejected 0.8–4.0% at alpha=0.05 (conservative). They have
+  not yet been run on the unpolarised or reference-haplotype replicates.
+- Without the TE polarity mask, the in-gene target's matching QC went from 0/10
+  to 10/10 passing sets (median best W1 from 3,831 to 53 generations; 10
+  replicates, 3 restarts, seed 1002). This resolves the blocker in review 12,
+  finding 6, at that scale.
+- The matcher and Phi-SFS refuse any target built with `--te-polarity-mask` or
+  `--max-flipped-fraction`, for either A type. The matcher also refuses a
+  target carrying `te_keep_draws.npy`. `run_bootstrap_matching.sbatch` exits if
+  `TE_POLARITY_MASK` or `MAX_FLIPPED_FRACTION` is set. The mask builder and
+  target options remain as diagnostics only.
+- VCF eligibility returns the ARG-orientable subset for TE targets as for SNP
+  targets, so a TE that no draw orients cannot enter A.
+- Phi-SFS output is now `phi-sfs-wasserstein-v3`, and `phi_contrast` requires
+  v3. Existing masked targets, their matches, and v2 results must be rebuilt.
+
+### Ancestral-table integrity and a fixed null count
+
+- Ancestral tables are now `ancestral-state-counts-v2`, which records the
+  SHA-256 of `ancestral_counts.npy` and `present_draw_count.npy`. The merge
+  verifies every part. `phi_sfs`, `vcf_eligibility` and
+  `individual_age_spectrum` verify the table when they load it, and Phi-SFS
+  output records the digests. v1 tables are refused and must be rebuilt.
+- New optional `phi_sfs --max-null-replicates N` (`MAX_NULL_REPLICATES` in
+  `run_phi_sfs.sbatch`). B0 is the first QC-passing set of the seeded
+  permutation and the nulls are the next N. It fails if fewer than N + 1 sets
+  pass. The output records the selected and unused replicate IDs and the
+  QC-passing count. Default behaviour, which uses every QC-passing set, is
+  unchanged.
+- The version is `0.9.0-rc2`, and the version tests check the constant.
+
+## v0.9.0-rc1 — 2026-09-27
+
+This release candidate changes the production Phi-SFS null to reproduce the
+known-versus-uncertain polarity structure of the observed TE-versus-SNP
+comparison. It is published for final capacity, depletion, and negative-control
+validation before the v0.9.0 release.
+
+### Bernoulli-q asymmetric polarity null
+
+- The production default is now
+  `bernoulli-q-hard-vs-posterior-mixture`: retained TEs remain biologically
+  hard-polarized, the reference SNP set B0 retains its posterior q-mixture, and
+  every null-left SNP receives one reproducible coordinate-keyed
+  Bernoulli(q) hard orientation.
+- SNP-versus-SNP negative controls hard-orient focal A with the same
+  Bernoulli(q) rule. `--no-asymmetric-polarity-null` retains the legacy
+  mixture-versus-mixture calculation only for comparison.
+- Phi-SFS output is now `phi-sfs-wasserstein-v2`. Category contrasts require
+  v2 inputs with the same recorded null-polarity design and reject mixed legacy
+  and asymmetric results.
+- The Farm launcher defaults to `ASYMMETRIC_POLARITY_NULL=true` and
+  `POLARITY_IMPUTATION_SEED=2001`.
+
+### Preliminary SNP negative control
+
+- A held-out real-SNP pilot rejected 7 of 100 pseudo-focal SNP sets at
+  alpha=0.05. The descriptive Wilson interval was 0.034--0.137.
+- This is not final calibration: the tests shared one reference and empirical
+  null vector, and the interrupted matcher prefix supplying the sets had zero
+  replicates below the production matching-error-ratio threshold.
+
+### Null replicates and the reference set
+
+- The matcher publishes 1001 disjoint sets by default, down from 1201. The in-gene
+  target's youngest 1,500 generations hold only about 1,045 disjoint sets' worth of
+  candidate age mass, so 1201 sets cannot all be age-matched.
+- Phi-SFS uses every QC-passing set other than B0 as a null, so R is whatever passes
+  QC. `--min-null-replicates` (default 900) sets a floor fixed before the run.
+  `--null-replicates` is removed. The add-one P-value (1 + exceedances) / (R + 1) is
+  valid for any R chosen without reference to the SFS.
+- B0 is drawn uniformly from the QC-passing sets with a seed derived from
+  `--reference-seed` (default 1002) and the target digest, instead of being
+  replicate 0. Replicate 0 is matched first, from the undepleted pool, so it is not
+  a typical set. `--reference-replicate` still names B0 explicitly, and reference
+  sensitivity takes its alternatives from the same seeded permutation.
+- `phi_contrast` accepts categories with different R and contrasts each pair over
+  min(R1, R2) randomly paired null replicates.
+
+### Disjoint capacity is measured in age mass
+
+The per-stratum preflight counted candidates by median-age stratum but compared
+them with quotas that are shares of the target's age mass. Most young mass on both
+sides comes from diffuse intervals, which median counting ignores, so the check
+reported about 357 sets of capacity for the in-gene target where the pool holds
+about 1,045 sets' worth. Both sides are now summed interval-weighted CDF mass.
+
+## v0.8.0 — 2026-09-25
+
+This release renames the project to PhiTE and replaces the Phi-SFS statistic.
+Phi-SFS outputs from earlier versions use a different schema and cannot be
+combined with v0.8.0 results.
+
+### Phi-SFS is a calibrated Wasserstein distance
+
+`normalize_tes.phi_sfs` now computes Phi-SFS as the first Wasserstein distance
+between the projected, normalized, unfolded SFS of focal set A and a fixed,
+prespecified matched SNP set B0. It calibrates that distance against R null
+distances from other matched sets B_i to B0, reporting the null mean, the
+sample SD, a Z-score and a one-sided add-one Monte Carlo P-value. The output
+schema is `phi-sfs-wasserstein-v1`. A may be TEs or SNPs (`-A TE|SNP`), so
+SNP-versus-SNP negative controls use the same code path.
+
+- R is fixed at 1000 in every category, so all categories are calibrated with
+  equal precision. The matcher publishes 1201 disjoint sets by default: B0,
+  1000 nulls and 200 spares. `--null-replicates R` takes B0 plus the first R
+  QC-passing sets in replicate-ID order and fails if fewer pass. QC depends
+  only on age matching, so this selection cannot depend on the SFS.
+- `--reference-sensitivity N` repeats the calibration with the next N
+  QC-passing sets as alternative references, chosen before the SFS scan.
+- The new `normalize_tes.phi_contrast` compares categories. It computes the
+  contrast Z1 - Z2 with a seeded pairing of the two null distributions, reports
+  a two-sided add-one P-value and its range over repeated pairings, and adjusts
+  for multiple comparisons with Holm and Benjamini-Hochberg.
+  `slurm/run_phi_contrast.sbatch` launches it.
+
+### Eligibility is fixed before matching and bound by content
+
+`normalize_tes.vcf_eligibility` scans the analysis VCF once and publishes the
+store rows with at least 20 callable individuals. For SNPs it also records the
+subset with a usable ARG orientation and each SNP's posterior orientation
+probability q. The TE target, the SNP candidate universe and Phi-SFS all use
+this one artifact, so A and every B set keep exactly M sites; Phi-SFS asserts
+this rather than dropping sites after matching.
+
+The artifact is identified by content: the VCF digest, its array digests, the
+heterozygous policy and the callability threshold. That identity is recorded
+in the target, the candidate report and the match bundle. The matcher, its
+launcher and Phi-SFS check it, and Phi-SFS also compares the digest of the VCF
+it scans with the recorded one.
+
+### Stricter inputs to matching and Phi-SFS
+
+- The matcher and Phi-SFS both check the declared A type against the target.
+  A TE target must carry the TE polarity filter at `max_flipped_fraction` 0.5,
+  and a SNP target must not.
+- TEs with no usable orientation draw are now discarded by the at-least-50%
+  derived rule rather than kept.
+- In disjoint mode, the matcher checks capacity in every age stratum, as well
+  as the total pool size, before any replicate work begins, and records it in
+  the bundle metadata. With `candidate-rows-75draw.npy`, the in-gene target
+  fails this check at 1201 sets. Its youngest stratum holds about 357 sets'
+  worth of candidates.
+
+### Other changes
+
+- VCF reading, hashing and genotype decoding live in one module,
+  `normalize_tes.vcf_io`, shared by the eligibility scan and Phi-SFS.
+- The eligibility report separates rows excluded from the callable mask from
+  rows excluded only from the SNP-orientable subset.
+- `tools/benchmark_phi_sfs_scale.py` measures Phi-SFS memory at production
+  scale. At 1201 sets of 19,000 sites, peak memory was 11.2 GiB.
+- `tools/validate_phi_calibration.py` and
+  [PHI_SFS_CALIBRATION_VALIDATION.md](PHI_SFS_CALIBRATION_VALIDATION.md)
+  record a simulation study of the test's calibration.
+- The project name in documentation and software provenance is now PhiTE. The
+  conda environment name and the frozen hash-salt identifiers are unchanged.
+
 ## v0.7.0 — 2026-09-01
 
 ### Draws are authenticated by content, not by file path

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from normalize_tes.distributed_age_match import main as distributed_main
+from normalize_tes.release_provenance import PROJECT_VERSION
 from normalize_tes.sample_age_matched_controls import _atomic_copy_file, main
 from normalize_tes.snp_interval_dataset import INTERVAL_SCHEMA_VERSION, pack_status
 from normalize_tes.swap_control_sampler import (
@@ -80,6 +81,7 @@ def _target(path, store_path, *, rows=None, threshold=1_000.0):
     np.save(path / "target_cdf.npy", cdf)
     np.save(path / "bootstrap_wasserstein.npy", np.array([threshold]))
     np.save(path / "interval_quotas.npy", quotas)
+    np.save(path / "te_keep_draws.npy", np.ones((rows.size, 1), dtype=bool))
     np.save(
         path / "interval_boundary_ages.npy",
         analysis_grid_edges(ages)[boundaries.indices],
@@ -89,6 +91,12 @@ def _target(path, store_path, *, rows=None, threshold=1_000.0):
         "source_catalog_sha256": "fixture-catalog",
         "source_store_content_sha256": "a" * 64,
         "wasserstein_threshold_generations": threshold,
+        "a_type": "TE",
+        "vcf_eligibility": {"mask": str((path.parent / "eligibility").resolve())},
+        "te_polarity": {
+            "mask": str((path.parent / "te-polarity").resolve()),
+            "max_flipped_fraction": 0.5,
+        },
     }), encoding="utf-8")
     return path
 
@@ -265,8 +273,8 @@ def test_cli_writes_four_exact_sets_atomically(tmp_path):
     metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["complete"] is True
     assert metadata["sets"] == 4
-    assert metadata["software"]["name"] == "normalizeTE"
-    assert metadata["software"]["version"] == "0.7.0"
+    assert metadata["software"]["name"] == "PhiTE"
+    assert metadata["software"]["version"] == PROJECT_VERSION
     assert metadata["algorithm_version"] == (
         "swap-age-controls-v2.1-adaptive-construction"
     )

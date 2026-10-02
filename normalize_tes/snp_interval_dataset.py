@@ -58,6 +58,7 @@ def compute_interval_store_content_sha256(
         key: metadata.get(key) for key in _CONTENT_IDENTITY_METADATA_KEYS
     }
     digest = hashlib.sha256()
+    # Frozen identifier: intentionally keeps the old project name so existing digests do not change.
     digest.update(b"normalizeTE-interval-store-content-v1\0")
     digest.update(json.dumps(
         semantic, sort_keys=True, separators=(",", ":")

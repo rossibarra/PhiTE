@@ -6,6 +6,7 @@ import shutil
 import numpy as np
 import pytest
 
+from ancestral_table_helpers import stamp_ancestral_table
 from normalize_tes import individual_age_spectrum as ias
 from normalize_tes.build_draw_polarity import SCHEMA_VERSION as POLARITY_SCHEMA
 from normalize_tes.snp_interval_dataset import (
@@ -115,12 +116,11 @@ def _ancestral_table(path, digest):
     np.save(path / "present_draw_count.npy",
             np.full(3, N_DRAWS, dtype=np.uint16))
     (path / "metadata.json").write_text(json.dumps({
-        "schema_version": "ancestral-state-counts-v1",
         "complete": True,
         "bases": ["A", "C", "G", "T"],
         "store_content_sha256": digest,
     }), encoding="utf-8")
-    return path
+    return stamp_ancestral_table(path)
 
 
 def _vcf(path, genotypes=("1/1", "0/1", "0/0"), positions=(5, 9, 20)):
@@ -224,6 +224,7 @@ def test_marginal_source_applies_draw_floor_to_orienting_calls(tmp_path):
     # not pass a floor of two merely because its age marginal is well sampled.
     counts[0] = [1, 0, 3, 0]
     np.save(table / "ancestral_counts.npy", counts)
+    stamp_ancestral_table(table)
     result = tmp_path / "marginal"
     assert ias.main([
         "--store", str(store), "--ancestral-table", str(table),

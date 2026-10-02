@@ -6,10 +6,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from ancestral_table_helpers import stamp_ancestral_table
 from normalize_tes import build_candidate_rows
 from normalize_tes import te_age_target
 from normalize_tes.vcf_eligibility import (
     EligibilityResult,
+    eligibility_identity,
     load_ancestral_table,
     load_eligibility,
     load_eligible_rows,
@@ -57,13 +59,12 @@ def _write_ancestral_table(path, *, digest="content"):
     np.save(path / "ancestral_counts.npy", counts)
     np.save(path / "present_draw_count.npy", present)
     (path / "metadata.json").write_text(json.dumps({
-        "schema_version": "ancestral-state-counts-v1",
         "bases": ["A", "C", "G", "T"],
         "store_content_sha256": digest,
         "store_rows": 5,
         "complete": True,
     }), encoding="utf-8")
-    return path
+    return stamp_ancestral_table(path)
 
 
 def test_scan_enforces_callability_and_nonpolarity_rules(tmp_path):
@@ -111,6 +112,25 @@ def test_ancestral_table_is_authenticated_against_store(tmp_path):
         load_ancestral_table(table, other)
 
 
+def test_ancestral_table_arrays_must_match_their_digests(tmp_path):
+    table = _write_ancestral_table(tmp_path / "ancestral")
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[0, 1] += 1
+    np.save(table / "ancestral_counts.npy", counts)
+    with pytest.raises(SystemExit, match="does not match its recorded digest"):
+        load_ancestral_table(table, _store())
+
+
+def test_ancestral_table_without_digests_is_refused(tmp_path):
+    table = _write_ancestral_table(tmp_path / "ancestral")
+    metadata = json.loads((table / "metadata.json").read_text())
+    metadata["schema_version"] = "ancestral-state-counts-v1"
+    del metadata["array_sha256"]
+    (table / "metadata.json").write_text(json.dumps(metadata))
+    with pytest.raises(SystemExit, match="unsupported ancestral-table schema"):
+        load_ancestral_table(table, _store())
+
+
 def test_heterozygous_missing_policy_matches_callability_semantics(tmp_path):
     vcf = _write_vcf(
         tmp_path / "sites.vcf.gz",
@@ -137,6 +157,8 @@ def test_published_mask_authenticates_store_and_projection_size(tmp_path):
             "schema_version": "vcf-eligibility-v1",
             "eligible_rows": 2,
             "min_callable": 20,
+            "vcf_sha256": "vcf-fake-hash",
+            "heterozygous": "error",
             "store_content_sha256": "content",
             "store_catalog_sha256": "catalog",
         },
@@ -162,6 +184,93 @@ def test_published_mask_authenticates_store_and_projection_size(tmp_path):
     with pytest.raises(SystemExit, match="authenticate"):
         load_eligible_rows(mask, other, variant_type="TE")
 
+    # Finding 4: the loaded object exposes the same content-addressed identity
+    # a caller would get by hashing the published metadata directly, so two
+    # consumers of the same mask are guaranteed to agree without comparing paths.
+    published_metadata = json.loads((mask / "metadata.json").read_text())
+    expected_identity = eligibility_identity(published_metadata)
+    assert set(expected_identity) == {
+        "vcf_sha256",
+        "heterozygous",
+        "min_callable",
+        "store_content_sha256",
+        "row_indices_sha256",
+        "snp_row_indices_sha256",
+        "p_alt_derived_sha256",
+    }
+    assert expected_identity["vcf_sha256"] == "vcf-fake-hash"
+    assert expected_identity["heterozygous"] == "error"
+    assert expected_identity["min_callable"] == 20
+    assert expected_identity["store_content_sha256"] == "content"
+    loaded_te = load_eligibility(mask, store, variant_type="TE", expected_min_callable=20)
+    assert loaded_te.identity == expected_identity
+    assert loaded_snp.identity == expected_identity
+
+
+def test_te_rows_are_the_orientable_subset_like_snp_rows(tmp_path):
+    """Phi-SFS orients a TE from the ARG, so an unorientable TE cannot enter A."""
+    store = _store()
+    result = EligibilityResult(
+        rows=np.array([0, 1, 2], dtype=np.int64),
+        alt_counts=np.array([1, 2, 3], dtype=np.uint32),
+        callable_counts=np.array([20, 20, 20], dtype=np.uint32),
+        report={
+            "schema_version": "vcf-eligibility-v1",
+            "eligible_rows": 3,
+            "min_callable": 20,
+            "vcf_sha256": "vcf-fake-hash",
+            "heterozygous": "error",
+            "store_content_sha256": "content",
+            "store_catalog_sha256": "catalog",
+        },
+        snp_rows=np.array([0, 2], dtype=np.int64),
+        p_alt_derived=np.array([0.25, 0.75]),
+    )
+    mask = tmp_path / "mask"
+    publish(mask, result, {})
+    loaded_te = load_eligibility(mask, store, variant_type="TE", expected_min_callable=20)
+    loaded_snp = load_eligibility(mask, store, variant_type="SNP", expected_min_callable=20)
+    np.testing.assert_array_equal(loaded_te.rows, [0, 2])
+    np.testing.assert_array_equal(loaded_te.rows, loaded_snp.rows)
+    np.testing.assert_allclose(loaded_te.p_alt_derived, [0.25, 0.75])
+
+
+def test_eligibility_identity_requires_every_field():
+    complete = {
+        "vcf_sha256": "vcf-hash",
+        "heterozygous": "missing",
+        "min_callable": 20,
+        "store_content_sha256": "store-hash",
+        "array_sha256": {
+            "row_indices": "row-hash",
+            "alt_counts": "alt-hash",
+            "callable_counts": "callable-hash",
+            "snp_row_indices": "snp-row-hash",
+            "p_alt_derived": "q-hash",
+        },
+    }
+    assert eligibility_identity(complete) == {
+        "vcf_sha256": "vcf-hash",
+        "heterozygous": "missing",
+        "min_callable": 20,
+        "store_content_sha256": "store-hash",
+        "row_indices_sha256": "row-hash",
+        "snp_row_indices_sha256": "snp-row-hash",
+        "p_alt_derived_sha256": "q-hash",
+    }
+    for key in ("vcf_sha256", "heterozygous", "min_callable", "store_content_sha256"):
+        incomplete = {k: v for k, v in complete.items() if k != key}
+        with pytest.raises(ValueError, match=key):
+            eligibility_identity(incomplete)
+    for key in ("row_indices", "snp_row_indices", "p_alt_derived"):
+        incomplete_arrays = {**complete, "array_sha256": {
+            k: v for k, v in complete["array_sha256"].items() if k != key
+        }}
+        with pytest.raises(ValueError, match=f"{key}_sha256"):
+            eligibility_identity(incomplete_arrays)
+    with pytest.raises(ValueError, match="row_indices_sha256"):
+        eligibility_identity({k: v for k, v in complete.items() if k != "array_sha256"})
+
 
 def test_candidate_builder_excludes_snp_a_target_from_vcf_eligible_b_pool(
     tmp_path, monkeypatch
@@ -176,6 +285,8 @@ def test_candidate_builder_excludes_snp_a_target_from_vcf_eligible_b_pool(
             "schema_version": "vcf-eligibility-v1",
             "eligible_rows": 3,
             "min_callable": 20,
+            "vcf_sha256": "vcf-fake-hash",
+            "heterozygous": "error",
             "store_content_sha256": "content",
             "store_catalog_sha256": "catalog",
         },
@@ -210,6 +321,33 @@ def test_candidate_builder_excludes_snp_a_target_from_vcf_eligible_b_pool(
     report = json.loads(output.with_suffix(".npy.json").read_text())
     assert report["universe_rows"] == 3
     assert report["vcf_eligibility"] == str(mask.resolve())
+    # Finding 4: the report binds the mask by content, not only by path.
+    published_metadata = json.loads((mask / "metadata.json").read_text())
+    assert report["vcf_eligibility_identity"] == eligibility_identity(published_metadata)
+
+
+def test_candidate_report_identity_is_null_without_vcf_eligibility(tmp_path, monkeypatch):
+    store = _store()
+    monkeypatch.setattr(build_candidate_rows, "open_snp_age_store", lambda _: store)
+    monkeypatch.setattr(build_candidate_rows, "store_schema", lambda _: "test-store")
+    monkeypatch.setattr(build_candidate_rows, "software_provenance", lambda: {})
+    monkeypatch.setattr(
+        build_candidate_rows,
+        "_resolve_lists",
+        lambda _store, paths, minimum_fraction, kind: (
+            np.array([3], dtype=np.int64), []
+        ),
+    )
+    output = tmp_path / "candidates.npy"
+    exclude = tmp_path / "exclude.txt"
+    assert build_candidate_rows.main([
+        "--store", str(tmp_path / "store"),
+        "--exclude-positions", str(exclude),
+        "--output", str(output),
+    ]) == 0
+    report = json.loads(output.with_suffix(".npy.json").read_text())
+    assert report["vcf_eligibility"] is None
+    assert report["vcf_eligibility_identity"] is None
 
 
 def test_loader_rejects_tampered_count_arrays(tmp_path):
@@ -298,4 +436,56 @@ def test_snp_subset_excludes_zero_orientation_but_keeps_full_q(tmp_path):
     )
     assert result.rows.tolist() == [0, 1, 2]
     assert result.snp_rows.tolist() == [0, 2]
-    assert result.report["excluded_by_reason"]["snp_no_usable_orientation"] == 1
+    assert "snp_no_usable_orientation" not in result.report["excluded_by_reason"]
+    assert result.report["snp_excluded_by_reason"]["snp_no_usable_orientation"] == 1
+
+
+def test_excluded_by_reason_reconciles_against_eligible_and_snp_orientable_rows(tmp_path):
+    """Finding 10: `excluded_by_reason` must account only for rows dropped
+    from the callable mask, and `snp_excluded_by_reason` only for rows that
+    stay callable but are dropped from the SNP-orientable subset. This drives
+    one VCF through every reason branch at once and checks both reconciliation
+    identities in the eligibility report's own docstring/comment.
+    """
+    called20 = ["0"] * 19 + ["1"]
+    vcf = _write_vcf(tmp_path / "sites.vcf", [
+        _record(1, called20),                 # eligible + SNP-orientable
+        _record(2, ["0"] * 19 + ["0/1"]),      # excluded_by_reason: heterozygous_genotype
+        _record(3, called20),                  # eligible, but zero ancestral orientation
+        _record(4, called20, alt="N"),         # eligible, but non-ACGT ALT
+        _record(5, called20),                  # excluded_by_reason: store_ineligible
+        _record(9, called20),                  # absent from the store catalog entirely
+    ])
+    counts = np.zeros((5, 4), dtype=np.uint16)
+    counts[0, 0] = 3  # row 0 (position 1): REF=A ancestral, fully oriented
+    counts[2, 0] = 0  # row 2 (position 3): no ancestral draw orients it
+    counts[3, 0] = 3  # row 3 (position 4): oriented, but ALT="N" is non-ACGT
+    present = counts.sum(axis=1, dtype=np.uint16)
+    result = scan_vcf(
+        vcf, _store(), min_callable=20,
+        ancestral_counts=counts, present_draw_count=present,
+    )
+    report = result.report
+
+    assert report["vcf_records"] == 6
+    assert report["store_catalog_records"] == 5
+    assert report["excluded_by_reason"] == {
+        "heterozygous_genotype": 1,
+        "store_ineligible": 1,
+    }
+    assert report["snp_excluded_by_reason"] == {
+        "snp_no_usable_orientation": 1,
+        "snp_non_acgt_alleles": 1,
+    }
+    assert result.rows.tolist() == [0, 2, 3]
+    assert result.snp_rows.tolist() == [0]
+
+    # The two reconciliation identities.
+    assert (
+        report["store_catalog_records"] - sum(report["excluded_by_reason"].values())
+        == report["eligible_rows"]
+    )
+    assert (
+        report["eligible_rows"] - sum(report["snp_excluded_by_reason"].values())
+        == report["snp_orientable_rows"]
+    )

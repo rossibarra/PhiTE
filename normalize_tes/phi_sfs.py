@@ -14,10 +14,15 @@ Input assumptions, all of which are recorded in the output metadata:
 * The VCF FILTER column is ignored. The declared input is the already
   filtered preprocessing VCF, so every record at a requested coordinate is used.
 * The VCF is **not** assumed to be polarized, and no REF or INFO annotation is
-  consulted. TE sites are polarized by biology -- an insertion is the derived
-  state -- and SNPs in either A or B by the ARG-derived table given to
-  `--ancestral-table`, as a posterior-weighted mixture over the two observed
-  alleles.
+  consulted. Every site, TE and SNP alike, is polarized by the ARG: its weight
+  is the posterior proportion of usable draws in which ALT is derived, and its
+  contribution is the q-mixture of its two orientations. TE records are A/G
+  biallelic sites in the ARG like any other, so the same ancestral table orients
+  them, and a TE whose absence is derived is counted at the absence frequency.
+  By default A, B0 and every null-left set are all posterior mixtures, so the
+  observed and null comparisons are built identically.
+  `--asymmetric-polarity-null` instead hard-orients A and every null-left set
+  by one reproducible Bernoulli(q) draw per site, keeping B0 a mixture.
 """
 
 from __future__ import annotations
@@ -25,9 +30,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime
-import gzip
 import hashlib
-import io
 import json
 import math
 import os
@@ -40,28 +43,41 @@ from typing import NamedTuple, Sequence
 
 import numpy as np
 
+from .build_ancestral_states import SCHEMA_VERSION as ANCESTRAL_SCHEMA_VERSION
+from .build_ancestral_states import verify_table_arrays
 from .release_provenance import software_provenance
 from .sample_age_matched_controls import _load_target, _sha256_arrays
+from .vcf_io import (  # noqa: F401 -- re-exported for existing callers
+    COMPRESSED_SUFFIXES,
+    _HashingStream,
+    _decode_genotype,
+    _open_vcf,
+    drain,
+)
 
 
-SCHEMA_VERSION = "phi-sfs-wasserstein-v1"
+SCHEMA_VERSION = "phi-sfs-wasserstein-v3"
+ASYMMETRIC_NULL_DESIGN = (
+    "bernoulli-q-hard-vs-posterior-mixture"
+)
+SYMMETRIC_NULL_DESIGN = (
+    "posterior-mixture-vs-posterior-mixture"
+)
 
-# Per-replicate identifier arrays published by each supported matched-control
-# schema. The swap sampler saves ten correlated states from each of ten chains,
-# so its replicates are identified by chain and position within that chain. The
-# bootstrap-target matcher produces replicates with no chain structure, so it
-# identifies them by replicate alone; inventing chain and sample columns would
-# imply a within-chain correlation that does not exist. "No chain structure" is
-# the whole claim -- these replicates are not statistically independent, since
-# they share the observed TE sample and the interval store.
-MATCH_IDENTIFIERS = {
-    "swap-age-matched-controls-v1": ("chain_index", "sample_index"),
-    "bootstrap-target-matches-v1": ("replicate_id",),
-}
+# The only supported matched-control schema, and the per-replicate identifier
+# array it publishes. The bootstrap-target matcher produces replicates with no
+# chain structure, so it identifies them by replicate alone; inventing chain
+# and sample columns would imply a within-chain correlation that does not
+# exist. "No chain structure" is the whole claim -- these replicates are not
+# statistically independent, since they share the observed TE sample and the
+# interval store. An earlier swap sampler identified replicates by chain and
+# sample instead; `calculate()` now accepts only this schema, so that mapping
+# is gone rather than carried as dead code.
+SUPPORTED_MATCH_SCHEMA = "bootstrap-target-matches-v1"
+MATCH_IDENTIFIER_NAMES = ("replicate_id",)
 
 PROJECTION_SIZE = 20
 RETAINED_BINS = np.arange(1, PROJECTION_SIZE, dtype=np.int64)
-COMPRESSED_SUFFIXES = (".gz", ".bgz", ".bgzf")
 PROGRESS_RECORDS = 5_000_000
 
 _UNSET = object()
@@ -77,10 +93,10 @@ class SiteCount:
     """One site's observed counts, with polarity carried rather than applied.
 
     `alt` and `callable` come from the genotypes and are polarity-independent.
-    `p_alt_derived` is the probability that ALT is the derived allele: exactly 1
-    at a TE site, where insertion is derived by biology, and the ARG's posterior
-    proportion at a control SNP. Orientation is applied when spectra are summed,
-    not here, because that is the only step that depends on it.
+    `p_alt_derived` is the probability that ALT is the derived allele: the ARG's
+    posterior proportion at every site, TE or SNP, in A or in B. Orientation is
+    applied when spectra are summed, not here, because that is the only step
+    that depends on it.
     """
 
     alt: int
@@ -208,6 +224,54 @@ def project_sites(
             distinct[item] = row
             retained.append(mixed[1:PROJECTION_SIZE])
             endpoints.append(float(mixed[0] + mixed[PROJECTION_SIZE]))
+        rows[coordinate] = row
+    projections = (
+        np.asarray(retained, dtype=np.float64) if retained
+        else np.zeros((0, PROJECTION_SIZE - 1), dtype=np.float64)
+    )
+    return rows, projections, np.asarray(endpoints, dtype=np.float64)
+
+
+def _site_uniform(seed: int, coordinate: tuple[str, int]) -> float:
+    """Return a stable coordinate-keyed U[0,1) variate."""
+    chrom, position = coordinate
+    payload = f"phi-sfs-bernoulli-q-v1\0{seed}\0{chrom}\0{position}".encode()
+    value = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+    return value / 2**64
+
+
+def project_sites_bernoulli_q(
+    counts: dict[tuple[str, int], SiteCount],
+    *,
+    seed: int,
+) -> tuple[dict[tuple[str, int], int], np.ndarray, np.ndarray]:
+    """Project sites after one reproducible hard orientation drawn from q.
+
+    For q = P(ALT derived | ARG), ALT is declared derived when a
+    coordinate-keyed U[0,1) draw is below q; otherwise REF is declared derived.
+    The expected hard projection is therefore the posterior-mixture projection.
+    """
+    rows: dict[tuple[str, int], int] = {}
+    distinct: dict[tuple[int, int, bool], int] = {}
+    retained: list[np.ndarray] = []
+    endpoints: list[float] = []
+    for coordinate, item in counts.items():
+        if item.callable < PROJECTION_SIZE:
+            continue
+        q = float(item.p_alt_derived)
+        if not 0.0 <= q <= 1.0:
+            raise ValueError(f"polarity weight out of range at {coordinate}: {q}")
+        alt_derived = _site_uniform(seed, coordinate) < q
+        key = (item.alt, item.callable, alt_derived)
+        row = distinct.get(key)
+        if row is None:
+            vector = hypergeometric_projection(item.alt, item.callable)
+            if not alt_derived:
+                vector = vector[::-1]
+            row = len(retained)
+            distinct[key] = row
+            retained.append(vector[1:PROJECTION_SIZE])
+            endpoints.append(float(vector[0] + vector[PROJECTION_SIZE]))
         rows[coordinate] = row
     projections = (
         np.asarray(retained, dtype=np.float64) if retained
@@ -363,68 +427,6 @@ def calibrate_phi(observed: float, null: np.ndarray) -> PhiCalibration:
     )
 
 
-class _HashingStream(io.RawIOBase):
-    """Raw byte stream that digests everything read through it."""
-
-    def __init__(self, handle):
-        self._handle = handle
-        self.digest = hashlib.sha256()
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, buffer) -> int:
-        read = self._handle.readinto(buffer)
-        if read:
-            self.digest.update(memoryview(buffer)[:read])
-        return read
-
-    def close(self) -> None:
-        try:
-            self._handle.close()
-        finally:
-            super().close()
-
-
-def _open_vcf(path: Path):
-    """Open a VCF as text over a hashing stream, so one pass yields both.
-
-    Returns the text handle, the hashing stream, and the buffered byte stream,
-    so that the caller can drain any bytes the text layer did not consume
-    before reading the digest.
-    """
-    hashing = _HashingStream(path.open("rb"))
-    buffered = io.BufferedReader(hashing, buffer_size=1 << 20)
-    compressed = path.suffix.lower() in COMPRESSED_SUFFIXES
-    stream = gzip.GzipFile(fileobj=buffered) if compressed else buffered
-    return io.TextIOWrapper(stream, encoding="utf-8"), hashing, buffered
-
-
-
-def _decode_genotype(gt: str, heterozygous: str) -> int | None | str:
-    """Return one individual's allele, None when not callable, or an error tag.
-
-    Each inbred individual contributes a single observed allele, so haploid and
-    homozygous diploid calls are accepted and any missing allele makes the
-    whole individual uncallable. Results are cached by the caller because
-    genotype strings are drawn from a very small alphabet.
-    """
-    alleles = gt.replace("|", "/").split("/")
-    if not alleles or any(allele == "." for allele in alleles):
-        return None
-    values = []
-    for allele in alleles:
-        if not allele.isdigit():
-            return "invalid"
-        value = int(allele)
-        if value not in (0, 1):
-            return "non-biallelic"
-        values.append(value)
-    if len(set(values)) > 1:
-        return None if heterozygous == "missing" else "heterozygous"
-    return values[0]
-
-
 def _checked_table_array(path: Path, shape: tuple[int, ...]) -> np.ndarray:
     """Load an ancestral-table array, refusing a wrong shape or a signed dtype.
 
@@ -442,24 +444,26 @@ def _checked_table_array(path: Path, shape: tuple[int, ...]) -> np.ndarray:
 
 
 class PolarityResolver:
-    """Resolves P(ALT is derived) per site, from two sources.
+    """Resolves P(ALT is derived) per site from the ARG ancestral table.
 
-    TE sites are polarized by biology: a TE insertion is the derived state, and
-    the genotyping convention encodes presence as ALT, so the weight is exactly
-    1. The rare exception -- a TE that fixed and was later removed by a deletion
-    -- is not modelled; it accounts for about 3% of TE sites and identifying it
-    would need an independent outgroup.
+    TE and SNP sites are resolved the same way. A TE insertion is biologically
+    derived, but taking that as known while the SNP controls carry the ARG's
+    uncertain polarity makes the observed and null comparisons differ in
+    construction, and in simulation that asymmetry alone produced large excess
+    rejection. So a TE is oriented by the ARG exactly as a SNP is; TE records
+    are A/G sites (A = absence) and a draw calling G ancestral makes absence the
+    derived allele. `te_coordinates` is used only to count the two kinds apart.
 
-    Control SNPs cannot be polarized that way. Their weight is the posterior
-    proportion of ARG draws calling REF ancestral -- equivalently, ALT derived --
-    among the draws that named one of the two observed alleles. Conditioning that
-    way rather than on the raw present-draw count is what lets every requested
-    site carry a weight without an intersection across draws or a fallback rule,
-    and it discards draws naming a third base, which cannot orient the site.
+    The weight is the posterior proportion of ARG draws calling REF ancestral --
+    equivalently, ALT derived -- among the draws that named one of the two
+    observed alleles. Conditioning that way rather than on the raw present-draw
+    count is what lets every requested site carry a weight without an
+    intersection across draws or a fallback rule, and it discards draws naming a
+    third base, which cannot orient the site.
 
     The proportion is used as reported. Against TE ground truth the ARG is only
     about 91% correct where all its draws agree, so this weight is somewhat
-    overconfident and control spectra come out sharper than the ARG's measured
+    overconfident and SNP spectra come out sharper than the ARG's measured
     accuracy warrants. That is a deliberate, recorded choice, not an oversight.
 
     Resolution happens during the VCF scan because the weight depends on which
@@ -483,14 +487,13 @@ class PolarityResolver:
         self._counts = ancestral_counts
         self._present = present_draw_count
         self.te_sites = 0
+        self.te_usable_draws = 0
+        self.te_unusable_draws = 0
         self.control_sites = 0
         self.control_usable_draws = 0
         self.control_unusable_draws = 0
 
     def __call__(self, chrom: str, position: int, ref: str, alt: str) -> float:
-        if (chrom, position) in self._te:
-            self.te_sites += 1
-            return 1.0
         offset = self._offsets.get(chrom)
         if offset is None:
             raise ValueError(f"no chromosome offset for {chrom!r}")
@@ -498,7 +501,7 @@ class PolarityResolver:
         index = int(np.searchsorted(self._positions, target))
         if index >= self._positions.size or self._positions[index] != target:
             raise ValueError(
-                f"control site {chrom}:{position} is absent from the ancestral "
+                f"site {chrom}:{position} is absent from the ancestral "
                 "table; it cannot be polarized"
             )
         if ref not in self.BASES or alt not in self.BASES:
@@ -522,10 +525,15 @@ class PolarityResolver:
                 f"no posterior draw at {chrom}:{position} calls either observed "
                 f"allele ({ref}/{alt}) ancestral; it cannot be polarized"
             )
-        self.control_sites += 1
-        self.control_usable_draws += int(oriented)
-        self.control_unusable_draws += int(self._present[index] - row.sum())
-        self.control_unusable_draws += int(row.sum() - oriented)
+        unusable = int(self._present[index] - oriented)
+        if (chrom, position) in self._te:
+            self.te_sites += 1
+            self.te_usable_draws += int(oriented)
+            self.te_unusable_draws += unusable
+        else:
+            self.control_sites += 1
+            self.control_usable_draws += int(oriented)
+            self.control_unusable_draws += unusable
         return ref_calls / oriented
 
 
@@ -607,8 +615,7 @@ def read_site_counts(
             found[coordinate] = SiteCount(
                 alt=alt_count, callable=callable_count, p_alt_derived=weight,
             )
-        while buffered.read(1 << 20):
-            pass
+        drain(buffered)
     finally:
         handle.close()
     if progress:
@@ -631,16 +638,17 @@ def _load_integers(path: Path, label: str) -> np.ndarray:
 def _load_coordinates(target: Path, matches: Path, schema: str):
     """Load and cross-validate the target and matched-control site arrays.
 
-    The per-replicate identifier arrays depend on the matched-control schema;
-    see MATCH_IDENTIFIERS. They are returned as a name-to-array mapping and
-    carried through to the outputs unchanged.
+    Returns the target's chromosomes, positions, and row indices; the matched
+    sets' chromosomes, positions, and row indices; and the per-replicate
+    identifier arrays for `schema` (a name-to-array mapping, carried through
+    to the outputs unchanged). Row indices are returned here, rather than
+    reloaded by the caller, because this function already loads and validates
+    them.
     """
-    names = MATCH_IDENTIFIERS.get(schema)
-    if names is None:
-        supported = ", ".join(sorted(MATCH_IDENTIFIERS))
+    if schema != SUPPORTED_MATCH_SCHEMA:
         raise ValueError(
             f"unsupported matched-control schema_version {schema!r}; "
-            f"expected one of: {supported}"
+            f"expected {SUPPORTED_MATCH_SCHEMA!r}"
         )
     te_chromosomes = np.load(target / "te_chromosomes.npy", allow_pickle=False).astype(str)
     labels = np.load(matches / "chromosome_labels.npy", allow_pickle=False).astype(str)
@@ -651,7 +659,7 @@ def _load_coordinates(target: Path, matches: Path, schema: str):
     rows = _load_integers(matches / "row_indices.npy", "matched row indices")
     identifiers = {
         name: _load_integers(matches / f"{name}.npy", f"{name} array")
-        for name in names
+        for name in MATCH_IDENTIFIER_NAMES
     }
     if te_chromosomes.shape != te_positions.shape or te_chromosomes.ndim != 1:
         raise ValueError("target chromosome and position arrays are not aligned 1-D arrays")
@@ -672,7 +680,11 @@ def _load_coordinates(target: Path, matches: Path, schema: str):
     if ordered.shape[1] > 1 and np.any(np.diff(ordered, axis=1) == 0):
         raise ValueError("a matched control set contains duplicate control rows")
     match_chromosomes = labels[codes]
-    return te_chromosomes, te_positions, match_chromosomes, positions, identifiers
+    return (
+        te_chromosomes, te_positions, te_rows,
+        match_chromosomes, positions, rows,
+        identifiers,
+    )
 
 
 def _json(path: Path) -> dict:
@@ -722,10 +734,111 @@ def _validate_provenance(target: Path, matches: Path) -> tuple[dict, dict, str]:
     return target_meta, match_meta, digest
 
 
+def _validate_target_authority(target_meta: dict, match_meta: dict, a_type: str) -> None:
+    """Require the target, not `-A`, to be the authority on A's variant type.
+
+    Mirrors `bootstrap_target_matcher._validate_inputs` (wording only; that
+    helper is private to the matcher and is not imported here). Without this,
+    `--a-type` is trusted blindly and the output metadata mislabels A's variant
+    type, which `phi_contrast` then groups on. These checks must pass before
+    `a_polarity_rule` is written to the output metadata or the VCF is scanned.
+
+    A target built with the TE polarity mask is refused for either type: its
+    at-least-50%-derived filter and agreeing-draw ages condition A on the ARG's
+    polarity in a way no SNP control set is, which is the asymmetry the
+    posterior-polarity design removes.
+    """
+    target_a_type = target_meta.get("a_type")
+    if target_a_type not in ("TE", "SNP"):
+        raise ValueError(
+            "target metadata does not declare a valid a_type; rebuild the "
+            "target with normalize_tes.te_age_target --a-type TE or SNP"
+        )
+    if target_a_type != a_type:
+        raise ValueError(
+            f"--a-type {a_type} disagrees with target metadata a_type={target_a_type}"
+        )
+    match_a_type = match_meta.get("a_type")
+    if match_a_type is not None and match_a_type != a_type:
+        raise ValueError(
+            f"--a-type {a_type} disagrees with matched-control metadata "
+            f"a_type={match_a_type}"
+        )
+    if target_meta.get("te_polarity") is not None:
+        raise ValueError(
+            "target was built with the TE polarity mask; A is polarized by the "
+            "ARG posterior like its SNP controls, so rebuild the target and "
+            "matches without --te-polarity-mask or --max-flipped-fraction"
+        )
+    eligibility = target_meta.get("vcf_eligibility")
+    if not isinstance(eligibility, dict) or not eligibility.get("mask"):
+        raise ValueError(
+            "age matching requires a final target built with --vcf-eligibility "
+            "so A was filtered before its size and age CDF were fixed"
+        )
+
+
+def _validate_vcf_identity(target_meta: dict, match_meta: dict, *, heterozygous: str) -> dict:
+    """Require the target and matched-control eligibility identities to agree.
+
+    `target_meta["vcf_eligibility"]["identity"]` and
+    `match_meta["vcf_eligibility_identity"]` are the same dict by contract --
+    the matcher copies it from the candidate report the eligibility mask was
+    built against -- so any difference means the two bundles rest on different
+    VCF eligibility decisions and must not be combined. The caller still owes
+    a check that the VCF actually scanned hashes to `identity["vcf_sha256"]`;
+    that can only happen after the scan, so this returns the identity rather
+    than checking the digest itself.
+    """
+    eligibility = target_meta.get("vcf_eligibility")
+    identity = eligibility.get("identity") if isinstance(eligibility, dict) else None
+    if not isinstance(identity, dict):
+        raise ValueError(
+            "target metadata vcf_eligibility record carries no identity; "
+            "rebuild the target from an eligibility mask that records one"
+        )
+    match_identity = match_meta.get("vcf_eligibility_identity")
+    if match_identity != identity:
+        raise ValueError(
+            "target and matched-control vcf_eligibility_identity values differ; "
+            "the two bundles were built against different VCF eligibility masks"
+        )
+    if identity.get("heterozygous") != heterozygous:
+        raise ValueError(
+            f"--heterozygous {heterozygous} disagrees with the eligibility "
+            f"mask's policy heterozygous={identity.get('heterozygous')!r}"
+        )
+    if identity.get("min_callable") != PROJECTION_SIZE:
+        raise ValueError(
+            f"eligibility mask min_callable={identity.get('min_callable')!r} "
+            f"must equal the projection size {PROJECTION_SIZE}"
+        )
+    return identity
+
+
 def calculate(args: argparse.Namespace) -> None:
     if args.min_null_replicates < 2:
         raise ValueError("--min-null-replicates must be at least 2 for a Z-score")
+    if args.reference_sensitivity < 0:
+        raise ValueError("--reference-sensitivity must be nonnegative")
+    capped = args.max_null_replicates is not None
+    if capped:
+        if args.max_null_replicates < 2:
+            raise ValueError("--max-null-replicates must be at least 2 for a Z-score")
+        if args.min_null_replicates > args.max_null_replicates:
+            raise ValueError("--min-null-replicates cannot exceed --max-null-replicates")
+        # A capped run defines B0 as the first set of the seeded permutation and
+        # the nulls as the next N; a named reference or alternative references
+        # would each need their own rule, so neither is combined with a cap.
+        if args.reference_replicate is not None:
+            raise ValueError("--max-null-replicates cannot be combined with --reference-replicate")
+        if args.reference_sensitivity:
+            raise ValueError("--max-null-replicates cannot be combined with --reference-sensitivity")
     target_meta, match_meta, target_digest = _validate_provenance(args.target, args.matches)
+    _validate_target_authority(target_meta, match_meta, args.a_type)
+    vcf_eligibility_identity = _validate_vcf_identity(
+        target_meta, match_meta, heterozygous=args.heterozygous
+    )
     match_schema = match_meta.get("schema_version")
     if match_schema != "bootstrap-target-matches-v1":
         raise ValueError(
@@ -740,48 +853,136 @@ def calculate(args: argparse.Namespace) -> None:
     if match_meta.get("maximum_control_reuse") != 1:
         raise ValueError("matched-control metadata must report maximum_control_reuse equal to 1")
 
-    te_chrom, te_pos, snp_chrom, snp_pos, identifiers = _load_coordinates(
+    te_chrom, te_pos, target_rows, snp_chrom, snp_pos, match_rows, identifiers = _load_coordinates(
         args.target, args.matches, match_schema
     )
     identifier_names = list(identifiers)
     replicate_ids = identifiers["replicate_id"]
     if np.unique(replicate_ids).size != replicate_ids.size:
         raise ValueError("matched-control replicate_id values must be unique")
-    reference_hits = np.flatnonzero(replicate_ids == args.reference_replicate)
-    if reference_hits.size != 1:
-        raise ValueError(
-            f"reference replicate ID {args.reference_replicate} is absent from matches"
-        )
-
     qc_pass = np.load(args.matches / "qc_pass.npy", allow_pickle=False)
     if qc_pass.dtype.kind != "b" or qc_pass.shape != replicate_ids.shape:
         raise ValueError("qc_pass.npy must be a boolean array aligned with matched sets")
-    reference_source_index = int(reference_hits[0])
-    if not bool(qc_pass[reference_source_index]):
-        raise ValueError(f"reference replicate ID {args.reference_replicate} failed matching QC")
-    accepted_source_indices = np.flatnonzero(qc_pass)
-    null_count = int(accepted_source_indices.size - 1)
+    replicate_order = np.argsort(replicate_ids, kind="stable")
+    passing = replicate_order[qc_pass[replicate_order]]
+
+    # B0 is drawn uniformly from the QC-passing sets with a seed derived from
+    # --reference-seed and the target digest, unless --reference-replicate
+    # names it. Replicate 0 is matched first, from the undepleted pool, so it
+    # is not a typical set; a seeded draw keeps the choice prespecified,
+    # reproducible and SFS-blind. That makes the choice of reference uniform
+    # among accepted sets; it does not by itself make sequentially matched
+    # sets exchangeable (CODE_REVIEW_ROUND12.md, finding 7).
+    # The same permutation supplies the alternative references for
+    # reference sensitivity, so they are prespecified in the same way.
+    reference_seed = int.from_bytes(hashlib.sha256(
+        f"phi-sfs-reference:{args.reference_seed}:{target_digest}".encode()
+    ).digest()[:8], "little")
+    order = passing[np.random.default_rng(reference_seed).permutation(passing.size)]
+    if args.reference_replicate is None:
+        if order.size == 0:
+            raise ValueError("no matched set passes QC, so no reference can be drawn")
+        reference_source_index = int(order[0])
+        reference_rule = (
+            f"uniform draw from QC-passing sets, seed from --reference-seed "
+            f"{args.reference_seed} and target_digest"
+        )
+    else:
+        reference_hits = np.flatnonzero(replicate_ids == args.reference_replicate)
+        if reference_hits.size != 1:
+            raise ValueError(
+                f"reference replicate ID {args.reference_replicate} is absent from matches"
+            )
+        reference_source_index = int(reference_hits[0])
+        if not bool(qc_pass[reference_source_index]):
+            raise ValueError(
+                f"reference replicate ID {args.reference_replicate} failed matching QC"
+            )
+        reference_rule = "prespecified --reference-replicate"
+    alternatives = order[order != reference_source_index]
+
+    # By default the nulls are every QC-passing set other than B0, so R is
+    # whatever the matcher delivered, subject to a floor fixed before the run.
+    # With --max-null-replicates N they are instead the next N sets of the same
+    # seeded permutation, which fixes R so that (R + 1) * alpha can be an
+    # integer and the nominal test has exact attainable size. QC is computed
+    # from age matching alone, so neither choice ever looks at an SFS. The
+    # add-one P-value (1 + exceedances) / (R + 1) is valid for any such R.
+    if capped:
+        if order.size < args.max_null_replicates + 1:
+            raise ValueError(
+                f"only {int(order.size)} matched sets pass QC; "
+                f"--max-null-replicates {args.max_null_replicates} requires "
+                f"{args.max_null_replicates + 1} (B0 plus the nulls)"
+            )
+        null_source_indices = order[1:args.max_null_replicates + 1]
+        unused_source_indices = order[args.max_null_replicates + 1:]
+    else:
+        null_source_indices = passing[passing != reference_source_index]
+        unused_source_indices = order[:0]
+    null_count = int(null_source_indices.size)
     if null_count < args.min_null_replicates:
         raise ValueError(
             f"only {null_count} QC-passing null replicates remain after reserving "
             f"B0; --min-null-replicates requires {args.min_null_replicates}"
         )
+    accepted_source_indices = np.sort(
+        np.append(null_source_indices, reference_source_index)
+    )
     reference_index = int(np.flatnonzero(
         accepted_source_indices == reference_source_index
     )[0])
     null_indices = np.delete(np.arange(accepted_source_indices.size), reference_index)
 
-    match_rows = _load_integers(args.matches / "row_indices.npy", "matched row indices")
-    if match_rows.shape != snp_pos.shape:
-        raise ValueError("matched row indices do not align with matched positions")
+    # Reference sensitivity reruns the calibration with the next N sets of the
+    # same seeded permutation as B0. Each alternative uses every other
+    # QC-passing set as its nulls, so the primary B0 becomes a null there, and
+    # all of them draw on the same scanned sets as the primary analysis.
+    sensitivity_n = int(args.reference_sensitivity)
+    if alternatives.size < sensitivity_n:
+        raise ValueError(
+            f"only {int(alternatives.size)} other QC-passing sets exist; "
+            f"--reference-sensitivity {sensitivity_n} requires that many"
+        )
+    sensitivity_source_indices = alternatives[:sensitivity_n]
+    sensitivity_accepted_sets: list[np.ndarray] = [
+        np.sort(passing) for _ in sensitivity_source_indices.tolist()
+    ]
+    # Every set any analysis (primary or sensitivity) uses must be scanned, so
+    # the union -- not just the primary accepted set -- determines `requested`
+    # below. The primary computation still reads only its own accepted
+    # sub-array afterwards, so requesting sensitivity cannot perturb it.
+    used_source_indices = np.unique(
+        np.concatenate([accepted_source_indices, *sensitivity_accepted_sets])
+    )
+
     if np.unique(match_rows).size != match_rows.size:
         raise ValueError("disjoint matched bundle contains a control used more than once")
-    target_rows = _load_integers(args.target / "te_row_indices.npy", "target row indices")
     if np.intersect1d(target_rows, match_rows).size:
         raise ValueError("matched B controls must exclude every row in focal set A")
+    reuse_row_indices = _load_integers(args.matches / "reuse_row_indices.npy", "reuse row indices")
     reuse_counts = _load_integers(args.matches / "reuse_counts.npy", "reuse counts")
-    if reuse_counts.ndim != 1 or reuse_counts.size == 0 or int(reuse_counts.max()) != 1:
+    if reuse_row_indices.ndim != 1 or reuse_counts.shape != reuse_row_indices.shape:
+        raise ValueError("reuse_row_indices.npy and reuse_counts.npy must be aligned 1-D arrays")
+    if np.any(np.diff(reuse_row_indices) <= 0):
+        raise ValueError("reuse_row_indices.npy must be strictly increasing")
+    if reuse_counts.size == 0 or int(reuse_counts.max()) != 1:
         raise ValueError("reuse_counts.npy must verify maximum control reuse equal to 1")
+
+    def max_control_reuse(rows: np.ndarray) -> int:
+        """Look up one matched set's rows and return their largest reuse count.
+
+        `reuse_row_indices.npy`/`reuse_counts.npy` record, for every control
+        row used in any published set, how many times it is used across the
+        whole bundle. In a valid disjoint bundle that is 1 everywhere, so this
+        is 1 for every set; the lookup is exact rather than assumed.
+        """
+        positions = np.searchsorted(reuse_row_indices, rows)
+        if np.any(positions >= reuse_row_indices.size) or np.any(
+            reuse_row_indices[positions] != rows
+        ):
+            raise ValueError("reuse_row_indices.npy does not cover every control row in use")
+        return int(reuse_counts[positions].max())
 
     def aligned_match_array(name: str) -> np.ndarray:
         values = np.load(args.matches / f"{name}.npy", allow_pickle=False)
@@ -826,23 +1027,33 @@ def calculate(args: argparse.Namespace) -> None:
         selected = values[accepted_source_indices]
         if not np.all(np.isfinite(selected)) or np.any(selected < 0.0):
             raise ValueError(f"QC-passing {name}.npy values must be finite and nonnegative")
-    snp_coordinates = [all_snp_coordinates[index] for index in accepted_source_indices]
+    # Scanned coordinates cover every set any analysis uses: the primary
+    # accepted set and, when sensitivity is requested, every alternative
+    # reference's own accepted set. Indexing by `used_source_indices` below
+    # then recovers just the primary sub-array, so this union cannot change
+    # the primary result.
+    used_snp_coordinates = [all_snp_coordinates[index] for index in used_source_indices]
     selected_identifiers = {
         name: values[accepted_source_indices] for name, values in identifiers.items()
     }
 
     requested = set(te_coordinates)
-    for row in snp_coordinates:
+    for row in used_snp_coordinates:
         requested.update(row)
     print(
         f"Scanning {args.vcf} for {len(requested):,} requested sites "
-        f"across {len(snp_coordinates)} matched sets",
+        f"across {len(used_snp_coordinates)} matched sets",
         flush=True,
     )
     table = Path(args.ancestral_table)
     store_meta = json.loads((table / "metadata.json").read_text(encoding="utf-8"))
-    if store_meta.get("schema_version") != "ancestral-state-counts-v1":
-        raise ValueError(f"unexpected ancestral table schema in {table}")
+    if store_meta.get("schema_version") != ANCESTRAL_SCHEMA_VERSION:
+        raise ValueError(
+            f"ancestral table at {table} has schema "
+            f"{store_meta.get('schema_version')!r}, expected "
+            f"{ANCESTRAL_SCHEMA_VERSION!r}; rebuild it with the current "
+            "normalize_tes.build_ancestral_states"
+        )
     if list(store_meta.get("bases", [])) != ["A", "C", "G", "T"]:
         raise ValueError(
             f"ancestral table declares bases {store_meta.get('bases')!r}; the "
@@ -902,12 +1113,16 @@ def calculate(args: argparse.Namespace) -> None:
         )
     present_counts = _checked_table_array(
         table / "present_draw_count.npy", (store_positions.size,))
+    ancestral_counts = _checked_table_array(
+        table / "ancestral_counts.npy", (store_positions.size, 4))
+    # Every site's polarity is read from these arrays, so bind their content to
+    # the metadata before trusting either.
+    verify_table_arrays(table, store_meta, ancestral_counts, present_counts)
     polarity = PolarityResolver(
         set(te_coordinates) if args.a_type == "TE" else set(),
         store_positions=store_positions,
         chromosome_offsets=chromosome_offsets,
-        ancestral_counts=_checked_table_array(
-            table / "ancestral_counts.npy", (store_positions.size, 4)),
+        ancestral_counts=ancestral_counts,
         present_draw_count=present_counts,
     )
     counts, vcf_sha256 = read_site_counts(
@@ -918,24 +1133,41 @@ def calculate(args: argparse.Namespace) -> None:
         progress=not args.quiet,
     )
     print(
-        f"polarity: {polarity.te_sites:,} TE sites from biology, "
+        f"polarity: {polarity.te_sites:,} TE sites and "
         f"{polarity.control_sites:,} SNP sites from the ancestral table",
         flush=True,
     )
+    if vcf_sha256 != vcf_eligibility_identity["vcf_sha256"]:
+        raise ValueError(
+            "the VCF differs from the one that defined eligibility: scanned "
+            f"{args.vcf} hashes to {vcf_sha256}, but the eligibility identity "
+            f"records {vcf_eligibility_identity['vcf_sha256']}"
+        )
     missing = sorted(requested.difference(counts))
     if missing:
         preview = ", ".join(f"{chrom}:{pos}" for chrom, pos in missing[:10])
         raise ValueError(f"{len(missing)} requested sites are absent from the VCF: {preview}")
 
     site_rows, projections, endpoints = project_sites(counts)
+    hard_site_rows = hard_projections = hard_endpoints = None
+    if args.asymmetric_polarity_null:
+        hard_site_rows, hard_projections, hard_endpoints = project_sites_bernoulli_q(
+            counts, seed=args.polarity_imputation_seed,
+        )
     print(
         f"Projected {projections.shape[0]:,} distinct (k, n) pairs "
         f"covering {len(site_rows):,} eligible sites",
         flush=True,
     )
 
+    # A is polarized exactly as the null-left sets are, whatever its type, so
+    # the observed and null distances differ only in which sites they hold.
+    a_uses_hard_imputation = args.asymmetric_polarity_null
     a_counts, a_endpoint, a_eligible = accumulate_spectrum(
-        te_coordinates, site_rows, projections, endpoints
+        te_coordinates,
+        hard_site_rows if a_uses_hard_imputation else site_rows,
+        hard_projections if a_uses_hard_imputation else projections,
+        hard_endpoints if a_uses_hard_imputation else endpoints,
     )
     if a_eligible != site_count:
         raise ValueError(
@@ -944,39 +1176,107 @@ def calculate(args: argparse.Namespace) -> None:
         )
     a_raw, a_normalized = normalized_spectrum(a_counts)
 
-    b_raw = np.empty((len(snp_coordinates), PROJECTION_SIZE - 1), dtype=np.float64)
-    b_normalized = np.empty_like(b_raw)
-    b_endpoints = np.empty(len(snp_coordinates), dtype=np.float64)
+    b_raw_all = np.empty((len(used_snp_coordinates), PROJECTION_SIZE - 1), dtype=np.float64)
+    b_normalized_all = np.empty_like(b_raw_all)
+    b_endpoints_all = np.empty(len(used_snp_coordinates), dtype=np.float64)
+    b_hard_raw_all = b_hard_normalized_all = b_hard_endpoints_all = None
+    if args.asymmetric_polarity_null:
+        b_hard_raw_all = np.empty_like(b_raw_all)
+        b_hard_normalized_all = np.empty_like(b_raw_all)
+        b_hard_endpoints_all = np.empty_like(b_endpoints_all)
 
-    for replicate, coordinates in enumerate(snp_coordinates):
+    for position, coordinates in enumerate(used_snp_coordinates):
         counts_vector, endpoint, eligible = accumulate_spectrum(
             coordinates, site_rows, projections, endpoints
         )
         if eligible != site_count:
-            replicate_id = int(selected_identifiers["replicate_id"][replicate])
+            replicate_id = int(replicate_ids[used_source_indices[position]])
             raise ValueError(
                 f"B replicate {replicate_id} retains {eligible} of {site_count} sites "
                 "after callability filtering; rebuild the target and controls with "
                 "the shared eligibility mask"
             )
         raw, normalized = normalized_spectrum(counts_vector)
-        b_raw[replicate] = raw
-        b_normalized[replicate] = normalized
-        b_endpoints[replicate] = endpoint
+        b_raw_all[position] = raw
+        b_normalized_all[position] = normalized
+        b_endpoints_all[position] = endpoint
+        if args.asymmetric_polarity_null:
+            hard_counts, hard_endpoint, hard_eligible = accumulate_spectrum(
+                coordinates, hard_site_rows, hard_projections, hard_endpoints
+            )
+            if hard_eligible != site_count:
+                raise RuntimeError("Bernoulli-q projection changed SNP eligibility")
+            hard_raw, hard_normalized = normalized_spectrum(hard_counts)
+            b_hard_raw_all[position] = hard_raw
+            b_hard_normalized_all[position] = hard_normalized
+            b_hard_endpoints_all[position] = hard_endpoint
 
     daf = RETAINED_BINS.astype(np.float64) / PROJECTION_SIZE
-    b_cdf = np.cumsum(b_normalized, axis=1)
+    b_cdf_all = np.cumsum(b_normalized_all, axis=1)
+    b_hard_cdf_all = (
+        np.cumsum(b_hard_normalized_all, axis=1)
+        if args.asymmetric_polarity_null else None
+    )
+
+    # The primary result is read out of the shared scan above by position, so
+    # it is identical whether or not sensitivity pulled extra sets into that
+    # scan: every array below depends only on this sub-selection.
+    accepted_positions = np.searchsorted(used_source_indices, accepted_source_indices)
+    b_raw = b_raw_all[accepted_positions]
+    b_normalized = b_normalized_all[accepted_positions]
+    b_endpoints = b_endpoints_all[accepted_positions]
+    b_cdf = b_cdf_all[accepted_positions]
+    b_hard_raw = b_hard_normalized = b_hard_endpoints = b_hard_cdf = None
+    if args.asymmetric_polarity_null:
+        b_hard_raw = b_hard_raw_all[accepted_positions]
+        b_hard_normalized = b_hard_normalized_all[accepted_positions]
+        b_hard_endpoints = b_hard_endpoints_all[accepted_positions]
+        b_hard_cdf = b_hard_cdf_all[accepted_positions]
     reference_sfs = b_normalized[reference_index]
     reference_cdf = b_cdf[reference_index]
     observed_result = phi_sfs(a_normalized, reference_sfs, daf=daf)
+    null_cdf = b_hard_cdf if args.asymmetric_polarity_null else b_cdf
+    null_sfs = b_hard_normalized if args.asymmetric_polarity_null else b_normalized
     null_phi = (
-        np.abs(b_cdf[null_indices, :-1] - reference_cdf[:-1])
+        np.abs(null_cdf[null_indices, :-1] - reference_cdf[:-1])
         * np.diff(daf)
     ).sum(axis=1)
     calibration = calibrate_phi(observed_result.value, null_phi)
     null_mean_daf_difference = (
-        (b_normalized[null_indices] - reference_sfs) @ daf
+        (null_sfs[null_indices] - reference_sfs) @ daf
     )
+
+    # Reference sensitivity: rerun the same phi_sfs/calibrate_phi pair once
+    # per alternative B0, each using every other QC-passing set as its nulls
+    # (see the selection above), reading out of the same shared scan.
+    sensitivity_reference_ids: list[int] = []
+    sensitivity_observed_phi_sfs: list[float] = []
+    sensitivity_z_scores: list[float] = []
+    sensitivity_p_values: list[float] = []
+    for alt_source, alt_accepted in zip(
+        sensitivity_source_indices.tolist(), sensitivity_accepted_sets
+    ):
+        alt_positions = np.searchsorted(used_source_indices, alt_accepted)
+        alt_normalized = b_normalized_all[alt_positions]
+        alt_cdf = b_cdf_all[alt_positions]
+        alt_reference_local = int(np.flatnonzero(alt_accepted == alt_source)[0])
+        alt_null_local = np.delete(np.arange(alt_accepted.size), alt_reference_local)
+        alt_reference_sfs = alt_normalized[alt_reference_local]
+        alt_reference_cdf = alt_cdf[alt_reference_local]
+        alt_result = phi_sfs(a_normalized, alt_reference_sfs, daf=daf)
+        alt_null_cdf = (
+            b_hard_cdf_all[alt_positions]
+            if args.asymmetric_polarity_null else alt_cdf
+        )
+        alt_null_phi = (
+            np.abs(alt_null_cdf[alt_null_local, :-1] - alt_reference_cdf[:-1])
+            * np.diff(daf)
+        ).sum(axis=1)
+        alt_calibration = calibrate_phi(alt_result.value, alt_null_phi)
+        sensitivity_reference_ids.append(int(replicate_ids[alt_source]))
+        sensitivity_observed_phi_sfs.append(alt_result.value)
+        sensitivity_z_scores.append(alt_calibration.z_score)
+        sensitivity_p_values.append(alt_calibration.p_value)
 
     selected_rows = match_rows[accepted_source_indices]
     reference_rows = selected_rows[reference_index]
@@ -992,6 +1292,21 @@ def calculate(args: argparse.Namespace) -> None:
     reference_id = int(selected_identifiers["replicate_id"][reference_index])
     a_retained_mass = float(a_raw.sum())
     reference_retained_mass = float(b_raw[reference_index].sum())
+    reference_max_control_reuse = max_control_reuse(reference_rows)
+    mixture_polarity_rule = (
+        "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
+    )
+    hard_polarity_rule = "coordinate-keyed hard Bernoulli(q) orientation"
+    a_polarity_rule = (
+        hard_polarity_rule if args.asymmetric_polarity_null else mixture_polarity_rule
+    )
+    null_left_polarity_rule = (
+        hard_polarity_rule if args.asymmetric_polarity_null else mixture_polarity_rule
+    )
+    null_polarity_design = (
+        ASYMMETRIC_NULL_DESIGN
+        if args.asymmetric_polarity_null else SYMMETRIC_NULL_DESIGN
+    )
 
     comparison_rows: list[dict[str, object]] = [{
         "role": "observed",
@@ -999,6 +1314,8 @@ def calculate(args: argparse.Namespace) -> None:
         "left_type": args.a_type,
         "right_id": reference_id,
         "right_type": args.b_type,
+        "left_polarity_rule": a_polarity_rule,
+        "right_polarity_rule": mixture_polarity_rule,
         "phi_sfs": observed_result.value,
         "null_z_score": "",
         "mean_daf_difference": observed_result.mean_daf_difference,
@@ -1017,6 +1334,8 @@ def calculate(args: argparse.Namespace) -> None:
         "right_match_to_bootstrap_w1": match_to_bootstrap[reference_source],
         "right_matching_error_ratio": match_error_ratio[reference_source],
         "overlap_with_reference": "",
+        "left_max_control_reuse": "",
+        "right_max_control_reuse": reference_max_control_reuse,
     }]
     for null_offset, accepted_index in enumerate(null_indices):
         source_index = int(selected_source[accepted_index])
@@ -1026,14 +1345,20 @@ def calculate(args: argparse.Namespace) -> None:
             "left_type": args.b_type,
             "right_id": reference_id,
             "right_type": args.b_type,
+            "left_polarity_rule": null_left_polarity_rule,
+            "right_polarity_rule": mixture_polarity_rule,
             "phi_sfs": calibration.null[null_offset],
             "null_z_score": calibration.null_z_scores[null_offset],
             "mean_daf_difference": null_mean_daf_difference[null_offset],
             "left_sites": site_count,
             "right_sites": site_count,
-            "left_retained_mass": float(b_raw[accepted_index].sum()),
+            "left_retained_mass": float(
+                (b_hard_raw if args.asymmetric_polarity_null else b_raw)[accepted_index].sum()
+            ),
             "right_retained_mass": reference_retained_mass,
-            "left_endpoint_mass": b_endpoints[accepted_index],
+            "left_endpoint_mass": (
+                b_hard_endpoints if args.asymmetric_polarity_null else b_endpoints
+            )[accepted_index],
             "right_endpoint_mass": b_endpoints[reference_index],
             "left_matching_qc_pass": True,
             "left_bootstrap_to_observed_w1": bootstrap_to_observed[source_index],
@@ -1044,6 +1369,8 @@ def calculate(args: argparse.Namespace) -> None:
             "right_match_to_bootstrap_w1": match_to_bootstrap[reference_source],
             "right_matching_error_ratio": match_error_ratio[reference_source],
             "overlap_with_reference": int(overlaps[null_offset]),
+            "left_max_control_reuse": max_control_reuse(selected_rows[accepted_index]),
+            "right_max_control_reuse": reference_max_control_reuse,
         })
 
     output = args.output
@@ -1079,7 +1406,25 @@ def calculate(args: argparse.Namespace) -> None:
                 f"null_{name}.npy": values[null_indices]
                 for name, values in selected_identifiers.items()
             },
+            "sensitivity_reference_ids.npy": np.asarray(
+                sensitivity_reference_ids, dtype=np.int64
+            ),
+            "sensitivity_observed_phi_sfs.npy": np.asarray(
+                sensitivity_observed_phi_sfs, dtype=np.float64
+            ),
+            "sensitivity_z_scores.npy": np.asarray(
+                sensitivity_z_scores, dtype=np.float64
+            ),
+            "sensitivity_p_values.npy": np.asarray(
+                sensitivity_p_values, dtype=np.float64
+            ),
         }
+        if args.asymmetric_polarity_null:
+            arrays.update({
+                "b_bernoulli_q_raw_sfs.npy": b_hard_raw,
+                "b_bernoulli_q_normalized_sfs.npy": b_hard_normalized,
+                "b_bernoulli_q_cdf.npy": b_hard_cdf,
+            })
         for name, values in arrays.items():
             np.save(staging / name, values, allow_pickle=False)
 
@@ -1099,6 +1444,23 @@ def calculate(args: argparse.Namespace) -> None:
             "p_value": calibration.p_value,
             "minimum_attainable_p": 1.0 / (null_count + 1.0),
             "mean_daf_difference": observed_result.mean_daf_difference,
+            "null_polarity_design": null_polarity_design,
+            "polarity_imputation_seed": (
+                args.polarity_imputation_seed if args.asymmetric_polarity_null else ""
+            ),
+            "reference_sensitivity_n": sensitivity_n,
+            "reference_sensitivity_z_min": (
+                min(sensitivity_z_scores) if sensitivity_z_scores else ""
+            ),
+            "reference_sensitivity_z_max": (
+                max(sensitivity_z_scores) if sensitivity_z_scores else ""
+            ),
+            "reference_sensitivity_p_min": (
+                min(sensitivity_p_values) if sensitivity_p_values else ""
+            ),
+            "reference_sensitivity_p_max": (
+                max(sensitivity_p_values) if sensitivity_p_values else ""
+            ),
         }
         with (staging / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(summary_row))
@@ -1135,17 +1497,26 @@ def calculate(args: argparse.Namespace) -> None:
             "target_digest": target_digest,
             "vcf": str(args.vcf.resolve()),
             "vcf_sha256": vcf_sha256,
-            "a_polarity_rule": (
-                "insertion presence is derived after upstream at-least-50%-derived "
-                "retention" if args.a_type == "TE" else
-                "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
+            "vcf_eligibility_identity": vcf_eligibility_identity,
+            "a_polarity_rule": a_polarity_rule,
+            "b_polarity_rule": mixture_polarity_rule,
+            "null_left_polarity_rule": null_left_polarity_rule,
+            "null_polarity_design": null_polarity_design,
+            "asymmetric_polarity_null": args.asymmetric_polarity_null,
+            "polarity_imputation_seed": (
+                args.polarity_imputation_seed if args.asymmetric_polarity_null else None
             ),
-            "b_polarity_rule": (
-                "posterior q*h(k,n) + (1-q)*h(n-k,n) over usable ARG draws"
+            "polarity_imputation_algorithm": (
+                "sha256(phi-sfs-bernoulli-q-v1, seed, chromosome, position)"
+                if args.asymmetric_polarity_null else None
             ),
             "ancestral_table": str(Path(args.ancestral_table).resolve()),
             "ancestral_table_schema_version": store_meta.get("schema_version"),
+            "ancestral_table_array_sha256": store_meta.get("array_sha256"),
             "te_sites_polarized": polarity.te_sites,
+            "te_usable_arg_draws": polarity.te_usable_draws,
+            "te_unusable_arg_draws": polarity.te_unusable_draws,
+            "te_polarity_source": "ARG posterior ancestral table, as for SNPs",
             "snp_sites_polarized": polarity.control_sites,
             "snp_usable_arg_draws": polarity.control_usable_draws,
             "snp_unusable_arg_draws": polarity.control_unusable_draws,
@@ -1160,13 +1531,35 @@ def calculate(args: argparse.Namespace) -> None:
                 "the VCF FILTER column is ignored; every record at a requested "
                 "coordinate is used"
             ),
-            "reference_selection_rule": "prespecified --reference-replicate before SFS scan",
+            "reference_selection_rule": reference_rule + ", chosen before the SFS scan",
+            "reference_seed": args.reference_seed,
             "reference_replicate_id": reference_id,
             "reference_index_in_b_arrays": reference_index,
             "reference_bootstrap_seed": int(bootstrap_seeds[reference_source]),
             "reference_bootstrap_counts_array": "b_bootstrap_counts.npy",
-            "requested_minimum_null_replicates": args.min_null_replicates,
+            "minimum_null_replicates": args.min_null_replicates,
             "accepted_null_replicates": null_count,
+            "null_selection_rule": (
+                f"the {args.max_null_replicates} QC-passing sets following B0 in "
+                "the seeded permutation"
+                if capped else "every QC-passing non-reference set"
+            ),
+            "max_null_replicates": args.max_null_replicates,
+            "qc_passing_sets": int(passing.size),
+            "selection_permutation_algorithm": (
+                "QC-passing sets ordered by replicate_id, permuted by "
+                "numpy.random.default_rng(seed).permutation, seed = first 8 bytes "
+                "(little-endian) of sha256('phi-sfs-reference:<reference_seed>:"
+                "<target_digest>'); B0 is the first set"
+            ),
+            "selected_null_replicate_ids": sorted(
+                int(value) for value in replicate_ids[null_source_indices]
+            ),
+            "unused_qc_passing_replicate_ids": sorted(
+                int(value) for value in replicate_ids[unused_source_indices]
+            ),
+            "matched_sets_published": int(replicate_ids.size),
+            "matched_sets_failing_qc": int(np.count_nonzero(~qc_pass)),
             "null_standard_deviation_ddof": 1,
             "p_value_tail_rule": "null distance >= observed distance",
             "p_value_formula": "(1 + exceedances) / (R + 1)",
@@ -1199,7 +1592,14 @@ def calculate(args: argparse.Namespace) -> None:
                 float(match_error_ratio[selected_source].min()),
                 float(match_error_ratio[selected_source].max()),
             ],
-            "reference_sensitivity_run": False,
+            "reference_sensitivity_run": sensitivity_n > 0,
+            "reference_sensitivity_n": sensitivity_n,
+            "reference_sensitivity_reference_ids": sensitivity_reference_ids,
+            "reference_sensitivity_rule": (
+                "alternative references are the next N sets of the seeded "
+                "permutation of QC-passing sets that chose B0; each uses every "
+                "other QC-passing set as its nulls, so the primary B0 becomes a null"
+            ),
             "target_source_store_content_sha256": target_meta.get("source_store_content_sha256"),
             "matches_source_store_content_sha256": match_meta.get("source_store_content_sha256"),
         }
@@ -1232,17 +1632,49 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="variant type of every matched control set B (default: SNP)",
     )
     parser.add_argument(
-        "--reference-replicate", type=int, default=0,
-        help="prespecified matched replicate ID to hold fixed as B0 (default: 0)",
+        "--reference-replicate", type=int, default=None,
+        help="matched replicate ID to hold fixed as B0; by default B0 is drawn "
+             "uniformly from the QC-passing sets (see --reference-seed)",
     )
     parser.add_argument(
-        "--min-null-replicates", type=int, default=1000,
-        help="minimum QC-passing B_i sets after reserving B0 (default: 1000)",
+        "--reference-seed", type=int, default=1002,
+        help="seed, combined with the target digest, for drawing B0 and the "
+             "reference-sensitivity alternatives (default: 1002)",
+    )
+    parser.add_argument(
+        "--min-null-replicates", type=int, default=900,
+        help="floor on R: every QC-passing non-reference set is a null, and "
+             "the run fails if fewer than this many pass (default: 900)",
+    )
+    parser.add_argument(
+        "--max-null-replicates", type=int, default=None,
+        help="use exactly N nulls: the N QC-passing sets that follow B0 in the "
+             "seeded permutation. Fails if fewer than N + 1 sets pass QC. "
+             "Default: every QC-passing non-reference set",
+    )
+    parser.add_argument(
+        "--reference-sensitivity", type=int, default=0,
+        help="repeat calibration with N alternative references: the next N "
+             "sets of the seeded permutation that chose B0 "
+             "(default: 0, no sensitivity run)",
     )
     parser.add_argument(
         "--ancestral-table", type=Path, required=True,
-        help="directory written by normalize_tes.build_ancestral_states, giving SNP "
-             "sites their posterior polarity; A uses it when --a-type SNP",
+        help="directory written by normalize_tes.build_ancestral_states, giving "
+             "every site, TE and SNP, its posterior polarity",
+    )
+    parser.add_argument(
+        "--asymmetric-polarity-null", action=argparse.BooleanOptionalAction,
+        default=False,
+        help="hard-polarize A and each null-left set with one Bernoulli(q) draw "
+             "per site while keeping B0 the posterior q-mixture. The default, "
+             "--no-asymmetric-polarity-null, keeps A, B0 and every null-left "
+             "set as posterior q-mixtures",
+    )
+    parser.add_argument(
+        "--polarity-imputation-seed", type=int, default=2001,
+        help="seed for coordinate-keyed Bernoulli(q) hard orientations "
+             "(default: 2001; used only with --asymmetric-polarity-null)",
     )
     parser.add_argument("--heterozygous", choices=("error", "missing"), default="error",
                         help="how to treat a heterozygous call in these inbred "

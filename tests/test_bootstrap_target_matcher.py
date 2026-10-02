@@ -8,18 +8,111 @@ import pytest
 
 from normalize_tes.bootstrap_target_matcher import (
     OptimizerConfig,
+    _candidate_array_digest,
     bootstrap_cdf,
     bootstrap_counts,
     derive_seed,
+    disjoint_stratum_capacity,
     log_search_grid,
     main,
+    mass_initial_set,
+    median_age_strata,
+    random_initial_set,
+    stratum_mass,
     optimize_restart,
     parse_args,
     validate_restart_result,
 )
 from normalize_tes.snp_age_store import open_snp_age_store
+from normalize_tes.snp_interval_dataset import INTERVAL_SCHEMA_VERSION, pack_status
 from normalize_tes.swap_control_sampler import analysis_points, eligible_candidates, search_grid
-from test_swap_control_sampler import _interval_store, _target
+from test_swap_control_sampler import _interval_store, _target as _base_target
+
+
+ELIGIBILITY_IDENTITY = {
+    "vcf_sha256": "v" * 64,
+    "heterozygous": "error",
+    "min_callable": 20,
+    "store_content_sha256": "a" * 64,
+    "row_indices_sha256": "r" * 64,
+    "snp_row_indices_sha256": "s" * 64,
+    "p_alt_derived_sha256": "p" * 64,
+}
+
+
+def _target(path, store_path, **kwargs):
+    """The shared fixture target as a production TE target: the eligibility
+    identity it records, and no TE polarity mask, which the matcher refuses."""
+    target = _base_target(path, store_path, **kwargs)
+    metadata_path = target / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["vcf_eligibility"]["identity"] = dict(ELIGIBILITY_IDENTITY)
+    metadata.pop("te_polarity", None)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    (target / "te_keep_draws.npy").unlink()
+    return target
+
+
+def _strata_store(path, below):
+    """An interval store with one 10-generation interval per SNP.
+
+    Like `_interval_store`, but the lower endpoints are chosen by the caller
+    so a test can place candidates in particular target age strata.
+    """
+    below = np.asarray(below, dtype=np.float64)
+    count = below.size
+    above = below + 10
+    arrays = {
+        "positions": np.arange(1, count + 1, dtype=np.float64),
+        "offsets": np.arange(count + 1, dtype=np.uint64),
+        "below": below,
+        "above": above,
+        "draw_id": np.zeros(count, dtype=np.uint8),
+        "status": pack_status(np.full((1, count), 2, dtype=np.uint8)),
+        "present_draw_count": np.ones(count, dtype=np.uint32),
+        "missing_draw_count": np.zeros(count, dtype=np.uint32),
+        "usable_draw_count": np.ones(count, dtype=np.uint32),
+        "usable_interval_count": np.ones(count, dtype=np.uint32),
+        "skipped_root_count": np.zeros(count, dtype=np.uint32),
+    }
+    path.mkdir()
+    for name, values in arrays.items():
+        np.save(path / f"{name}.npy", values)
+    (path / "metadata.json").write_text(json.dumps({
+        "schema_version": INTERVAL_SCHEMA_VERSION,
+        "n_snps": count,
+        "n_intervals": count,
+        "n_posterior_draws": 1,
+        "maximum_above": float(above.max()),
+        "endpoint_dtype": "float64",
+        "minimum_usable_draws": 1,
+        "arrays": {
+            name: {"dtype": value.dtype.name, "shape": list(value.shape)}
+            for name, value in arrays.items()
+        },
+        "chromosomes": [{"chrom": "1", "offset": 0, "length": 100}],
+        "catalog_sha256": "fixture-catalog",
+        "content_sha256": "a" * 64,
+    }), encoding="utf-8")
+    return path
+
+
+def _candidate_file(tmp_path, rows, *, identity=None):
+    """A candidate array with the provenance report build_candidate_rows writes."""
+    path = tmp_path / "candidates.npy"
+    array = np.asarray(rows, dtype=np.int64)
+    np.save(path, array)
+    report = {
+        "store_content_sha256": "a" * 64,
+        "store_catalog_sha256": "fixture-catalog",
+        "candidate_rows": int(array.size),
+        "candidate_rows_sha256": _candidate_array_digest(array),
+        "vcf_eligibility_identity": (
+            dict(ELIGIBILITY_IDENTITY) if identity is None else identity
+        ),
+    }
+    path.with_suffix(".npy.json").write_text(json.dumps(report), encoding="utf-8")
+    return path
 
 
 def test_default_replicate_count_provides_reference_and_null_sets():
@@ -30,6 +123,50 @@ def test_default_replicate_count_provides_reference_and_null_sets():
     ])
     assert args.replicates == 1001
     assert args.disjoint_replicates
+    assert args.a_type == "TE"
+
+
+def test_a_type_must_match_the_filtered_target(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    with pytest.raises(ValueError, match="disagrees with target metadata"):
+        _run_matcher(store, target, tmp_path / "output", "-A", "SNP")
+
+
+def test_snp_a_uses_snp_filtered_target_without_te_polarity(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    metadata_path = target / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["a_type"] = "SNP"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    output = tmp_path / "output"
+    assert _run_matcher(store, target, output, "-A", "SNP") == 0
+    published = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+    assert published["a_type"] == "SNP"
+
+
+@pytest.mark.parametrize("a_type", ["TE", "SNP"])
+def test_target_built_with_te_polarity_mask_is_refused(tmp_path, a_type):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    metadata_path = target / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["a_type"] = a_type
+    metadata["te_polarity"] = {"max_flipped_fraction": 0.5}
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="TE polarity mask"):
+        _run_matcher(store, target, tmp_path / "output", "-A", a_type)
+
+
+def test_te_target_with_undeclared_draw_mask_is_refused(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    rows = np.load(target / "te_row_indices.npy")
+    np.save(target / "te_keep_draws.npy", np.ones((rows.size, 1), dtype=bool))
+    with pytest.raises(ValueError, match="te_keep_draws.npy"):
+        _run_matcher(store, target, tmp_path / "output")
 
 
 def test_disjoint_capacity_fails_before_creating_work_state(tmp_path):
@@ -45,6 +182,145 @@ def test_disjoint_capacity_fails_before_creating_work_state(tmp_path):
         )
     assert not output.exists()
     assert not work.exists()
+
+
+# Two target TEs with medians near 5 and 17 generations put the target's
+# quota in strata 1 and 2 (one site each); candidates with lower endpoints 1
+# and 13 fall in those same strata.
+_YOUNG, _OLD = 1, 13
+
+
+def test_median_age_strata_is_shared_and_chunk_invariant(tmp_path):
+    store_path = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 6 + [_OLD] * 6)
+    target = _target(tmp_path / "target", store_path)
+    store = open_snp_age_store(store_path)
+    boundaries = np.load(target / "interval_boundary_ages.npy")
+    quotas = np.load(target / "interval_quotas.npy")
+    candidates = np.arange(2, 14)
+    strata = median_age_strata(store, candidates, boundaries, quotas.size)
+    np.testing.assert_array_equal(
+        strata, median_age_strata(store, candidates, boundaries, quotas.size,
+                                  chunk_rows=1, block_rows=1),
+    )
+    np.testing.assert_array_equal(strata, [1] * 6 + [2] * 6)
+    np.testing.assert_array_equal(quotas, [0, 1, 1, 0])
+
+
+def test_mass_initial_set_matches_target_mass(tmp_path):
+    """One young and one old target: the greedy draw takes one of each."""
+    store_path = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 6 + [_OLD] * 6)
+    target = _target(tmp_path / "target", store_path)
+    store = open_snp_age_store(store_path)
+    boundaries = np.load(target / "interval_boundary_ages.npy")
+    candidates = np.arange(2, 14)
+    target_mass = stratum_mass(store, np.array([0, 1]), boundaries)
+    initial = mass_initial_set(store, boundaries, target_mass, 2, candidates,
+                               np.random.default_rng(0), oversample=6)
+    assert initial.size == 2
+    assert np.sum(initial < 8) == 1 and np.sum(initial >= 8) == 1
+    rand = random_initial_set(2, candidates, np.random.default_rng(0))
+    assert rand.size == 2 and np.unique(rand).size == 2
+    assert np.isin(rand, candidates).all()
+    assert parse_args(["--store", "s", "--target", "t", "--output", "o",
+                       "--all-eligible", "--init-mode", "mass"]).init_mode == "mass"
+
+
+def test_capacity_is_measured_in_age_mass_on_both_sides(tmp_path):
+    """Boundaries are -5, 5, 15, 25, 35 and every interval is 10 generations.
+
+    Target TEs span [0, 10] and [12, 22], so their stratum masses are
+    (0.5, 0.5, 0, 0) and (0, 0.3, 0.7, 0). A young candidate [1, 11] gives
+    (0.4, 0.6, 0, 0) and an old one [13, 23] gives (0, 0.2, 0.8, 0). The
+    median-based quota for stratum 0 would be zero; its mass is not.
+    """
+    store_path = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 6 + [_OLD] * 6)
+    target = _target(tmp_path / "target", store_path)
+    store = open_snp_age_store(store_path)
+    boundaries = np.load(target / "interval_boundary_ages.npy")
+    candidates = np.arange(2, 14)
+    np.testing.assert_allclose(
+        stratum_mass(store, candidates, boundaries),
+        stratum_mass(store, candidates, boundaries, chunk_rows=1, block_rows=1),
+    )
+    candidate_mass, target_mass, capacity = disjoint_stratum_capacity(
+        store, candidates, np.array([0, 1]), boundaries)
+    np.testing.assert_allclose(target_mass, [0.5, 0.8, 0.7, 0.0])
+    np.testing.assert_allclose(candidate_mass, [2.4, 4.8, 4.8, 0.0])
+    np.testing.assert_allclose(capacity, [4.8, 6.0, 4.8 / 0.7, np.inf])
+    # Every row contributes exactly one unit of mass.
+    assert candidate_mass.sum() == pytest.approx(candidates.size)
+
+
+def test_disjoint_stratum_capacity_passes_when_every_stratum_suffices(tmp_path):
+    store = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 6 + [_OLD] * 6)
+    target = _target(tmp_path / "target", store)
+    candidates = _candidate_file(tmp_path, np.arange(2, 14))
+    output = tmp_path / "output"
+    assert _run_matcher(
+        store, target, output, "--replicates", "3", "--disjoint-replicates",
+        candidates=candidates,
+    ) == 0
+    metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["stratum_quotas"] == [0, 1, 1, 0]
+    assert metadata["disjoint_stratum_candidate_mass"] == pytest.approx([2.4, 4.8, 4.8, 0.0])
+    assert metadata["disjoint_stratum_target_mass"] == pytest.approx([0.5, 0.8, 0.7, 0.0])
+    assert metadata["disjoint_stratum_capacity_sets"][:3] == pytest.approx([4.8, 6.0, 4.8 / 0.7])
+    assert metadata["disjoint_stratum_capacity_sets"][3] is None
+    assert metadata["maximum_control_reuse"] == 1
+    assert metadata["vcf_eligibility_identity"] == ELIGIBILITY_IDENTITY
+
+
+def test_disjoint_capacity_fails_when_one_stratum_is_thin(tmp_path):
+    """Ten candidates hold 3 x 2 in total, but only two are young.
+
+    The two young candidates supply 0.8 of stratum-0 mass against the
+    3 x 0.5 = 1.5 that three disjoint sets need; strata 1 and 2 suffice.
+    """
+    store = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 2 + [_OLD] * 8)
+    target = _target(tmp_path / "target", store)
+    candidates = _candidate_file(tmp_path, np.arange(2, 12))
+    output, work = tmp_path / "output", tmp_path / "work"
+    with pytest.raises(ValueError) as caught:
+        _run_matcher(
+            store, target, output, "--replicates", "3", "--disjoint-replicates",
+            "--work-dir", str(work), candidates=candidates,
+        )
+    message = str(caught.value)
+    assert "1 of 4 strata fall short" in message
+    assert "stratum 0: candidate mass 0.8 / target mass 0.50 = 1.6 sets" in message
+    assert "stratum 1" not in message
+    assert "stratum 2" not in message
+    assert "will not be silently reused" in message
+    assert not output.exists()
+    assert not work.exists()
+
+
+def test_candidate_and_target_eligibility_identities_must_agree(tmp_path):
+    store = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 6 + [_OLD] * 6)
+    target = _target(tmp_path / "target", store)
+    other = {**ELIGIBILITY_IDENTITY, "vcf_sha256": "w" * 64}
+    candidates = _candidate_file(tmp_path, np.arange(2, 14), identity=other)
+    output = tmp_path / "output"
+    with pytest.raises(ValueError, match=r"different VCF-eligibility artifacts "
+                                         r"\(differing: vcf_sha256\)"):
+        _run_matcher(store, target, output, candidates=candidates)
+    assert not output.exists()
+
+
+def test_candidate_report_without_eligibility_identity_is_rejected(tmp_path):
+    store = _strata_store(tmp_path / "store", [0, 12] + [_YOUNG] * 6 + [_OLD] * 6)
+    target = _target(tmp_path / "target", store)
+    incomplete = {k: v for k, v in ELIGIBILITY_IDENTITY.items() if k != "heterozygous"}
+    candidates = _candidate_file(tmp_path, np.arange(2, 14), identity=incomplete)
+    with pytest.raises(ValueError, match="vcf_eligibility_identity lacks heterozygous"):
+        _run_matcher(store, target, tmp_path / "output", candidates=candidates)
+
+
+def test_target_without_eligibility_identity_is_rejected(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _base_target(tmp_path / "target", store)
+    with pytest.raises(ValueError, match="vcf_eligibility.identity is missing"):
+        _run_matcher(store, target, tmp_path / "output")
 
 
 def test_bootstrap_counts_and_cdf_are_reproducible():
@@ -116,10 +392,14 @@ def test_exact_optimizer_trace_is_monotone_and_certified(tmp_path):
     )
 
 
-def _run_matcher(store, target, output, *extra):
+def _run_matcher(store, target, output, *extra, candidates=None):
+    universe = (
+        ["--all-eligible"] if candidates is None
+        else ["--candidate-rows", str(candidates)]
+    )
     return main([
         "--store", str(store), "--target", str(target),
-        "--all-eligible", "--output", str(output),
+        *universe, "--output", str(output),
         "--replicates", "2", "--restarts", "2",
         "--min-epochs", "2", "--max-epochs", "3", "--patience", "1",
         "--material-improvement-ratio", "0", "--cdf-block-rows", "2",
@@ -184,7 +464,7 @@ def test_resume_rejects_a_changed_implementation(tmp_path):
         "--work-dir", str(work), "--keep-work",
     ) == 0
     identity = json.loads((work / "identity.json").read_text())
-    assert identity["software"]["name"] == "normalizeTE"
+    assert identity["software"]["name"] == "PhiTE"
     assert identity["numpy_version"]
     identity["software"]["git_commit"] = "0" * 40
     (work / "identity.json").write_text(json.dumps(identity, indent=2, sort_keys=True))

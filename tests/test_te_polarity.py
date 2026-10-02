@@ -170,6 +170,16 @@ def test_exactly_half_derived_support_is_retained(tmp_path):
     assert sel.report["sites_discarded_by_threshold"] == 0
 
 
+def test_no_usable_draw_cannot_pass_derived_support_threshold(tmp_path):
+    store = _interval_store({0: []}, n_draws=4)
+    mask = tmp_path / "mask"
+    _write_mask(mask, [[False] * 4], [[False] * 4], [0])
+    sel = te_age_target.load_polarity_selection(mask, np.array([0]), store, 0.5)
+    assert sel.keep_sites.tolist() == [False]
+    assert sel.report["sites_with_no_usable_draw"] == 1
+    assert sel.report["sites_discarded_by_threshold"] == 1
+
+
 def test_selection_without_a_threshold_keeps_every_site(tmp_path):
     store = _interval_store({0: [], 1: []}, n_draws=2)
     mask = tmp_path / "mask"

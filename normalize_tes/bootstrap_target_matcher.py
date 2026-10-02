@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import shutil
 import sys
@@ -28,10 +29,7 @@ from .swap_control_sampler import (
     incremental_cdf,
     row_cdfs,
 )
-from .te_age_target import (
-    masked_row_cdfs,
-    wasserstein_1,
-)
+from .te_age_target import wasserstein_1
 
 
 SCHEMA_VERSION = "bootstrap-target-matches-v1"
@@ -142,6 +140,125 @@ def bootstrap_cdf(counts: np.ndarray, cdf_rows: np.ndarray,
     return accumulated / total
 
 
+def median_age_strata(
+    store: object, rows: np.ndarray, boundary_ages: np.ndarray,
+    n_strata: int, *, block_rows: int = 4096, chunk_rows: int = 1 << 20,
+) -> np.ndarray:
+    """Assign each row to the target age stratum holding its median age.
+
+    The median is read off the row's CDF at the target's boundary ages: the
+    stratum is the one whose upper boundary is the first at which the CDF
+    reaches 0.5. Rows whose CDF never reaches 0.5 by the last boundary go to
+    the oldest stratum. The stratified initialisation uses it to fill each
+    stratum's quota. The disjoint capacity preflight deliberately does not:
+    the quotas are shares of the target's age mass, so capacity is measured in
+    mass (`stratum_mass`), not in median counts.
+
+    CDFs are evaluated `chunk_rows` at a time and reduced to a stratum index
+    immediately, so memory stays bounded when the whole candidate universe is
+    scanned; chunking does not change any row's result.
+    """
+    indices = np.asarray(rows, dtype=np.int64)
+    ages = np.asarray(boundary_ages, dtype=np.float64)
+    if n_strata <= 0 or chunk_rows <= 0:
+        raise ValueError("stratum count and chunk size must be positive")
+    out = np.empty(indices.size, dtype=np.int32)
+    for start in range(0, indices.size, chunk_rows):
+        stop = min(start + chunk_rows, indices.size)
+        at_boundary = row_cdfs(store, indices[start:stop], ages,
+                               block_rows=block_rows, dtype=np.dtype("float32"))
+        # median age = first boundary whose CDF reaches 0.5
+        reached = at_boundary >= 0.5
+        stratum = np.where(reached.any(axis=1), reached.argmax(axis=1) - 1,
+                           n_strata - 1)
+        out[start:stop] = np.clip(stratum, 0, n_strata - 1)
+    return out
+
+
+def stratum_mass(
+    store: object, rows: np.ndarray, boundary_ages: np.ndarray, *,
+    block_rows: int = 4096, chunk_rows: int = 1 << 20,
+) -> np.ndarray:
+    """Return the summed age probability mass of `rows` in each target stratum.
+
+    Each row's interval-weighted CDF is read at the target's boundary ages,
+    and the mass between consecutive boundaries is summed over rows. Mass
+    below the first boundary is added to the first stratum and mass above the
+    last boundary to the last, so every row contributes exactly one unit.
+    This is the quantity the target quotas are built from (the TE mean CDF is
+    split into equal-mass strata) and the quantity the matcher's CDF objective
+    has to reproduce, so the two sides of the capacity check are measured the
+    same way. Chunking bounds memory and does not change the result.
+    """
+    indices = np.asarray(rows, dtype=np.int64)
+    ages = np.asarray(boundary_ages, dtype=np.float64)
+    if ages.ndim != 1 or ages.size < 2:
+        raise ValueError("boundary ages must define at least one stratum")
+    if chunk_rows <= 0:
+        raise ValueError("chunk size must be positive")
+    total = np.zeros(ages.size - 1, dtype=np.float64)
+    for start in range(0, indices.size, chunk_rows):
+        stop = min(start + chunk_rows, indices.size)
+        cdf = row_cdfs(store, indices[start:stop], ages,
+                       block_rows=block_rows, dtype=np.dtype("float64"))
+        if not np.all(np.isfinite(cdf)):
+            raise ValueError("stratum mass requires a finite CDF for every row")
+        cdf[:, 0] = 0.0
+        cdf[:, -1] = 1.0
+        total += np.diff(cdf, axis=1).sum(axis=0)
+    return total
+
+
+def disjoint_stratum_capacity(
+    store: object, candidates: np.ndarray, target_rows: np.ndarray,
+    boundary_ages: np.ndarray, *, block_rows: int = 4096,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return candidate mass, target mass, and capacity in sets per stratum.
+
+    Capacity is `candidate_mass / target_mass`: how many disjoint sets could
+    supply that stratum's share of the target's age mass before the pool runs
+    dry. Both masses are summed interval-weighted CDF differences, so a
+    candidate with a diffuse age contributes to every stratum it overlaps,
+    exactly as it does in the matcher's objective. Strata with no target mass
+    impose no limit and report infinite capacity.
+    """
+    candidate_mass = stratum_mass(store, candidates, boundary_ages,
+                                  block_rows=block_rows)
+    target_mass = stratum_mass(store, target_rows, boundary_ages,
+                               block_rows=block_rows)
+    positive = target_mass > 0.0
+    capacity = np.divide(
+        candidate_mass, target_mass,
+        out=np.full(target_mass.size, np.inf), where=positive,
+    )
+    return candidate_mass, target_mass, capacity
+
+
+def check_disjoint_stratum_capacity(
+    candidate_mass: np.ndarray, target_mass: np.ndarray,
+    capacity: np.ndarray, replicates: int, *, show: int = 5,
+) -> None:
+    """Fail unless every stratum holds `replicates x target mass` candidate mass."""
+    short = np.flatnonzero(candidate_mass < replicates * target_mass)
+    if not short.size:
+        return
+    worst = short[np.argsort(capacity[short], kind="stable")][:show]
+    detail = "; ".join(
+        f"stratum {int(k)}: candidate mass {candidate_mass[k]:,.1f} / target "
+        f"mass {target_mass[k]:,.2f} = {capacity[k]:.1f} sets"
+        for k in worst
+    )
+    raise ValueError(
+        f"disjoint matching requires every target age stratum to hold "
+        f"{replicates:,} sets' worth of candidate age mass (replicates x "
+        f"target mass), but {short.size} of {target_mass.size} strata fall "
+        f"short; the scarcest are {detail}. A stratum whose mass runs out "
+        "cannot be matched by later replicates, so they would match "
+        "progressively worse. Prespecify fewer replicates or use an alternate "
+        "null design; controls will not be silently reused."
+    )
+
+
 def stratified_initial_set(
     store: object, boundary_ages: np.ndarray, quotas: np.ndarray,
     candidates: np.ndarray, rng: np.random.Generator, *,
@@ -158,7 +275,8 @@ def stratified_initial_set(
 
     Candidates are assigned to a stratum by their median age, read off their
     CDF at the 21 boundary ages rather than on the full analysis grid, so this
-    costs one narrow read per sampled candidate. A pool of `oversample` times
+    costs one narrow read per sampled candidate. The assignment is
+    `median_age_strata`. A pool of `oversample` times
     the target size is drawn first; any stratum the draw underfills is topped up
     from the unused remainder, so the returned set always has exactly the
     required size even where the pool is thin.
@@ -166,13 +284,7 @@ def stratified_initial_set(
     n_target = int(quotas.sum())
     pool = rng.choice(candidates, size=min(candidates.size, n_target * oversample),
                       replace=False)
-    at_boundary = row_cdfs(store, pool, np.asarray(boundary_ages, dtype=np.float64),
-                           block_rows=4096, dtype=np.dtype("float32"))
-    # median age = first boundary whose CDF reaches 0.5
-    reached = at_boundary >= 0.5
-    stratum = np.where(reached.any(axis=1), reached.argmax(axis=1) - 1,
-                       quotas.size - 1)
-    stratum = np.clip(stratum, 0, quotas.size - 1)
+    stratum = median_age_strata(store, pool, boundary_ages, quotas.size)
 
     chosen: list[np.ndarray] = []
     used = np.zeros(pool.size, dtype=bool)
@@ -192,6 +304,55 @@ def stratified_initial_set(
             "raise --init-oversample or widen the candidate pool"
         )
     return np.sort(out)
+
+
+def mass_initial_set(
+    store: object, boundary_ages: np.ndarray, target_mass: np.ndarray,
+    n_target: int, candidates: np.ndarray, rng: np.random.Generator, *,
+    oversample: int = 20, block_rows: int = 4096,
+) -> np.ndarray:
+    """Draw an initial set whose summed stratum age mass tracks the target's.
+
+    The alternative to `stratified_initial_set`: instead of filling median-age
+    quotas, each pool row's age mass across the strata (`stratum_mass` per
+    row) is compared with the mass the set still lacks, and rows are added
+    greedily, each time taking the one that most reduces the squared residual
+    `|remaining - m_i|^2`. A row with a diffuse age thus counts towards every
+    stratum it overlaps, as it does in the matcher's CDF objective.
+    """
+    pool = rng.choice(candidates, size=min(candidates.size, n_target * oversample),
+                      replace=False)
+    if pool.size < n_target:
+        raise ValueError(
+            f"mass initialisation drew {pool.size:,} of {n_target:,} rows; "
+            "raise --init-oversample or widen the candidate pool"
+        )
+    cdf = row_cdfs(store, pool, np.asarray(boundary_ages, dtype=np.float64),
+                   block_rows=block_rows, dtype=np.dtype("float64"))
+    if not np.all(np.isfinite(cdf)):
+        raise ValueError("mass initialisation requires a finite CDF for every row")
+    cdf[:, 0] = 0.0
+    cdf[:, -1] = 1.0
+    mass = np.diff(cdf, axis=1)
+    norm = np.einsum("ij,ij->i", mass, mass)
+    remaining = np.asarray(target_mass, dtype=np.float64).copy()
+    available = np.ones(pool.size, dtype=bool)
+    chosen = np.empty(n_target, dtype=np.int64)
+    for step in range(n_target):
+        gain = 2.0 * (mass @ remaining) - norm
+        gain[~available] = -np.inf
+        pick = int(np.argmax(gain))
+        chosen[step] = pick
+        available[pick] = False
+        remaining -= mass[pick]
+    return np.sort(pool[chosen])
+
+
+def random_initial_set(
+    n_target: int, candidates: np.ndarray, rng: np.random.Generator,
+) -> np.ndarray:
+    """Draw an initial set uniformly from the candidates, ignoring age."""
+    return np.sort(rng.choice(candidates, size=n_target, replace=False))
 
 
 def optimize_restart(
@@ -398,19 +559,104 @@ def target_digest_for(path: Path) -> tuple[str, np.ndarray, np.ndarray, np.ndarr
     return digest, rows, cdf, ages, threshold, metadata
 
 
-def _validate_inputs(store: object, target_meta: dict) -> None:
+def _validate_inputs(store: object, target_meta: dict, a_type: str) -> None:
     actual_schema = store_schema(store)
     actual_content = getattr(store, "metadata", {}).get("content_sha256")
     actual_catalog = getattr(store, "metadata", {}).get("catalog_sha256")
     expected_schema = target_meta.get("source_store_schema")
     expected_content = target_meta.get("source_store_content_sha256")
     expected_catalog = target_meta.get("source_catalog_sha256")
+    target_a_type = target_meta.get("a_type")
+    if target_a_type not in ("TE", "SNP"):
+        raise ValueError(
+            "target metadata does not declare a valid a_type; rebuild the target "
+            "with normalize_tes.te_age_target --a-type TE or SNP"
+        )
+    if target_a_type != a_type:
+        raise ValueError(
+            f"--a-type {a_type} disagrees with target metadata a_type={target_a_type}"
+        )
+    eligibility = target_meta.get("vcf_eligibility")
+    if not isinstance(eligibility, dict) or not eligibility.get("mask"):
+        raise ValueError(
+            "age matching requires a final target built with --vcf-eligibility "
+            "so A was filtered before its size and age CDF were fixed"
+        )
+    _require_eligibility_identity(
+        eligibility.get("identity"), "target metadata vcf_eligibility.identity"
+    )
+    # A TE is polarized by the ARG posterior exactly as its SNP controls are,
+    # so its ages come from all draws and no TE is filtered on ARG polarity.
+    # A masked target conditions A alone on that polarity, which in simulation
+    # produced excess rejection, so it is refused for either type.
+    if target_meta.get("te_polarity") is not None:
+        raise ValueError(
+            "target was built with the TE polarity mask; rebuild it without "
+            "--te-polarity-mask or --max-flipped-fraction so A's ages and "
+            "sites are conditioned the same way as its SNP controls"
+        )
     if expected_schema is not None and expected_schema != actual_schema:
         raise ValueError("target and store schemas differ")
     if expected_content is not None and expected_content != actual_content:
         raise ValueError("target and store content identities differ")
     if expected_catalog is not None and expected_catalog != actual_catalog:
         raise ValueError("target and store catalogs differ")
+
+
+VCF_ELIGIBILITY_IDENTITY_KEYS = (
+    "vcf_sha256", "heterozygous", "min_callable", "store_content_sha256",
+    "row_indices_sha256", "snp_row_indices_sha256", "p_alt_derived_sha256",
+)
+
+
+def _require_eligibility_identity(identity: object, label: str) -> dict:
+    """Require a complete VCF-eligibility identity record.
+
+    A path names a location, not the content at it, so the eligibility
+    artifact is identified by the VCF digest, genotype policy, callability
+    threshold, store and array digests it was built from.
+    """
+    if not isinstance(identity, dict):
+        raise ValueError(
+            f"{label} is missing; rebuild it with the current pipeline so the "
+            "VCF-eligibility artifact is identified by content, not by path"
+        )
+    missing = [
+        key for key in VCF_ELIGIBILITY_IDENTITY_KEYS
+        if identity.get(key) is None or identity.get(key) == ""
+    ]
+    if missing:
+        raise ValueError(f"{label} lacks {', '.join(missing)}")
+    return identity
+
+
+def _matched_eligibility_identity(target_meta: dict,
+                                  candidate_report: dict) -> dict:
+    """Require the candidate rows and target to share one eligibility artifact.
+
+    Both were filtered by a VCF-eligibility artifact; if those differ, A and
+    its controls were restricted to different callable universes and the
+    matched sets no longer answer the question being asked.
+    """
+    target_identity = _require_eligibility_identity(
+        (target_meta.get("vcf_eligibility") or {}).get("identity"),
+        "target metadata vcf_eligibility.identity",
+    )
+    candidate_identity = _require_eligibility_identity(
+        candidate_report.get("vcf_eligibility_identity"),
+        "candidate report vcf_eligibility_identity",
+    )
+    if candidate_identity != target_identity:
+        differing = sorted(
+            key for key in set(candidate_identity) | set(target_identity)
+            if candidate_identity.get(key) != target_identity.get(key)
+        )
+        raise ValueError(
+            "candidate rows and target were filtered by different VCF-eligibility "
+            f"artifacts (differing: {', '.join(differing)}); rebuild both from "
+            "the same eligibility artifact"
+        )
+    return target_identity
 
 
 def _authenticate_candidate_rows(path: Path, store: object,
@@ -482,13 +728,15 @@ def _candidate_array_digest(values: np.ndarray) -> str:
 
 
 def _candidate_rows(args: argparse.Namespace, store: object,
-                    target_rows: np.ndarray) -> tuple[np.ndarray, str | None]:
+                    target_rows: np.ndarray
+                    ) -> tuple[np.ndarray, str | None, dict | None]:
     if args.candidate_rows is None:
-        return eligible_candidates(store, target_rows, None), None
+        return eligible_candidates(store, target_rows, None), None, None
     raw = np.load(args.candidate_rows, allow_pickle=False)
-    _authenticate_candidate_rows(Path(args.candidate_rows), store, np.asarray(raw))
+    report = _authenticate_candidate_rows(
+        Path(args.candidate_rows), store, np.asarray(raw))
     rows = eligible_candidates(store, target_rows, raw)
-    return rows, _sha256_arrays(np.asarray(raw))
+    return rows, _sha256_arrays(np.asarray(raw)), report
 
 
 def _save_replicate_bundle(
@@ -641,11 +889,18 @@ def _write_outputs(
     all_restarts: list[list[RestartResult]],
     selected_restart: np.ndarray,
     config: OptimizerConfig,
+    a_type: str,
     global_seed: int,
     candidate_digest: str | None,
     target_digest: str,
     store_dir: Path,
     elapsed: float,
+    eligibility_identity: dict,
+    stratum_quotas: np.ndarray,
+    stratum_counts: np.ndarray | None = None,
+    stratum_target_mass: np.ndarray | None = None,
+    stratum_capacity: np.ndarray | None = None,
+    init_mode: str = "median",
 ) -> None:
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
@@ -852,7 +1107,8 @@ def _write_outputs(
             "qc_passes": int(qc.sum()),
             "qc_failures": int((~qc).sum()),
             "qc_interpretation": "optimizer convergence diagnostic, not biological validation",
-            "bootstrap_kind": "iid multinomial TE-site bootstrap",
+            "a_type": a_type,
+            "bootstrap_kind": "iid multinomial A-site bootstrap",
             "bootstrap_linkage_warning": (
                 "inferential use requires exchangeability support or replacement "
                 "with a prespecified genomic-block bootstrap"
@@ -863,6 +1119,25 @@ def _write_outputs(
             "elapsed_seconds": elapsed,
             "unique_controls_across_sets": int(unique_rows.size),
             "maximum_control_reuse": int(reuse.max()),
+            "vcf_eligibility_identity": eligibility_identity,
+            "stratum_quotas": [int(q) for q in stratum_quotas],
+            "init_mode": init_mode,
+            # Candidate and target age mass per stratum, and their ratio,
+            # measured before any replicate ran; null outside disjoint mode,
+            # where no preflight is needed, and for strata with no target mass.
+            "disjoint_stratum_candidate_mass": (
+                None if stratum_counts is None
+                else [float(c) for c in stratum_counts]
+            ),
+            "disjoint_stratum_target_mass": (
+                None if stratum_target_mass is None
+                else [float(c) for c in stratum_target_mass]
+            ),
+            "disjoint_stratum_capacity_sets": (
+                None if stratum_capacity is None
+                else [None if not math.isfinite(c) else float(c)
+                      for c in stratum_capacity]
+            ),
         }
         with (staging / "metadata.json").open("w", encoding="utf-8") as handle:
             json.dump(metadata, handle, indent=2, sort_keys=True)
@@ -902,10 +1177,19 @@ def run(args: argparse.Namespace) -> None:
     quotas = np.load(args.target / "interval_quotas.npy", allow_pickle=False)
     if int(quotas.sum()) != target_rows.size:
         raise ValueError("target quotas do not sum to the target set size")
-    _validate_inputs(store, target_meta)
-    candidates, candidate_digest = _candidate_rows(args, store, target_rows)
+    _validate_inputs(store, target_meta, args.a_type)
+    candidates, candidate_digest, candidate_report = _candidate_rows(
+        args, store, target_rows)
+    # --all-eligible has no candidate report to compare, so only the target's
+    # identity is published; --candidate-rows must agree with it.
+    eligibility_identity = (
+        _matched_eligibility_identity(target_meta, candidate_report)
+        if candidate_report is not None
+        else target_meta["vcf_eligibility"]["identity"]
+    )
     if candidates.size <= target_rows.size:
         raise ValueError("candidate universe must exceed target set size")
+    stratum_counts = stratum_target_mass = stratum_capacity = None
     if config.disjoint_replicates:
         required_candidates = config.replicates * target_rows.size
         if candidates.size < required_candidates:
@@ -917,6 +1201,29 @@ def run(args: argparse.Namespace) -> None:
                 "Prespecify fewer replicates or use an alternate null design; "
                 "controls will not be silently reused."
             )
+        # Total capacity is not enough: stratified_initial_set fills each age
+        # stratum's quota, and once a stratum runs dry it back-fills from
+        # other ages, so later replicates would match progressively worse
+        # while the total pool still looks ample. Check every stratum before
+        # any work directory or replicate state exists.
+        scan_started = time.perf_counter()
+        stratum_counts, stratum_target_mass, stratum_capacity = (
+            disjoint_stratum_capacity(
+                store, candidates, target_rows, boundary_ages))
+        print(
+            f"disjoint_stratum_capacity_sets min="
+            f"{float(np.min(stratum_capacity)):.1f} "
+            f"scan_seconds={time.perf_counter() - scan_started:.1f}",
+            flush=True,
+        )
+        check_disjoint_stratum_capacity(
+            stratum_counts, stratum_target_mass, stratum_capacity,
+            config.replicates)
+    init_target_mass = None
+    if args.init_mode == "mass":
+        init_target_mass = (
+            stratum_target_mass if stratum_target_mass is not None
+            else stratum_mass(store, target_rows, boundary_ages))
     points = analysis_points(age_bins)
     exact_step = float(age_bins[1] - age_bins[0])
     if config.search_bin_width < exact_step:
@@ -927,35 +1234,20 @@ def run(args: argparse.Namespace) -> None:
         SEARCH_LOG_OFFSET,
     )
     print(f"coarse_grid=log points={coarse_points.size}", flush=True)
-    # A target built with a polarity mask defines each TE's age CDF over its
-    # agreeing draws only. Rebuilding from the store without the mask would not
-    # merely fail the reconstruction check below -- it would hand every one of
-    # the bootstrap targets the mis-polarized ages the mask exists to remove,
-    # while the observed target kept them out. So the mask is required, not
-    # optional, whenever the target records one.
-    keep_path = args.target / "te_keep_draws.npy"
-    declares_mask = (target_meta.get("te_polarity") or None) is not None
-    if declares_mask and not keep_path.exists():
+    # `_validate_inputs` has refused any target that declares a polarity mask.
+    # A per-TE draw mask on disk without that declaration would still mean the
+    # target's CDFs were built over a subset of draws that the bootstrap
+    # targets below, rebuilt from all draws, do not share.
+    if (args.target / "te_keep_draws.npy").exists():
         raise ValueError(
-            f"{args.target} records a polarity mask in its metadata but has no "
-            "te_keep_draws.npy. Its per-TE CDFs cannot be reproduced, and the "
-            "bootstrap targets derived from them would silently disagree with "
-            "the target. Rebuild the target with the current normalize_tes.te_age_target."
+            f"{args.target} carries te_keep_draws.npy, so its TE age CDFs were "
+            "built from a per-draw polarity mask. Rebuild the target without "
+            "--te-polarity-mask."
         )
-    if keep_path.exists():
-        keep_draws = np.load(keep_path, allow_pickle=False)
-        if keep_draws.shape[0] != target_rows.size:
-            raise ValueError(
-                "te_keep_draws.npy does not align with the target's TE rows"
-            )
-        te_cdf_rows = masked_row_cdfs(
-            store, target_rows, points, keep_draws,
-        ).astype(np.float32)
-    else:
-        te_cdf_rows = row_cdfs(
-            store, target_rows, points,
-            block_rows=config.cdf_block_rows, dtype=np.dtype("float32"),
-        )
+    te_cdf_rows = row_cdfs(
+        store, target_rows, points,
+        block_rows=config.cdf_block_rows, dtype=np.dtype("float32"),
+    )
     reconstructed = te_cdf_rows.mean(axis=0, dtype=np.float64)
     if not np.allclose(reconstructed, observed_target, rtol=1e-6, atol=1e-7):
         raise ValueError("target CDF does not match exact TE-row reconstruction")
@@ -989,6 +1281,8 @@ def run(args: argparse.Namespace) -> None:
         "target_digest": target_digest,
         "source_store_content_sha256": getattr(store, "metadata", {}).get("content_sha256"),
         "candidate_rows_digest": candidate_digest,
+        "vcf_eligibility_identity": eligibility_identity,
+        "a_type": args.a_type,
         "global_seed": args.seed,
         "config": asdict(config),
     }
@@ -1025,9 +1319,9 @@ def run(args: argparse.Namespace) -> None:
         # published sets share no controls. That is zero membership OVERLAP, not
         # zero dependence: each replicate draws from a pool the earlier ones
         # depleted, and all of them bootstrap the same observed TE sample.
-        # Total capacity was checked before any work directory or replicate
-        # state was created. Retain this per-replicate guard as an invariant
-        # check in case the selection logic changes.
+        # Total and per-stratum capacity were checked before any work directory
+        # or replicate state was created. Retain this per-replicate guard as an
+        # invariant check in case the selection logic changes.
         if config.disjoint_replicates and claimed_arr.size:
             replicate_candidates = candidates[~np.isin(candidates, claimed_arr)]
             if replicate_candidates.size < target_rows.size:
@@ -1076,11 +1370,21 @@ def run(args: argparse.Namespace) -> None:
                 # replicate's own candidate universe, which in disjoint mode
                 # already excludes every row an earlier replicate published, so
                 # the starting state is legal by construction.
-                initial = stratified_initial_set(
-                    store, boundary_ages, quotas, replicate_candidates,
-                    np.random.default_rng(restart_seed),
-                    oversample=args.init_oversample,
-                )
+                init_rng = np.random.default_rng(restart_seed)
+                if args.init_mode == "mass":
+                    initial = mass_initial_set(
+                        store, boundary_ages, init_target_mass,
+                        target_rows.size, replicate_candidates, init_rng,
+                        oversample=args.init_oversample,
+                    )
+                elif args.init_mode == "random":
+                    initial = random_initial_set(
+                        target_rows.size, replicate_candidates, init_rng)
+                else:
+                    initial = stratified_initial_set(
+                        store, boundary_ages, quotas, replicate_candidates,
+                        init_rng, oversample=args.init_oversample,
+                    )
                 result = optimize_restart(
                     store, replicate_candidates, initial,
                     bootstrap_targets[replicate], observed_target, age_bins,
@@ -1144,11 +1448,18 @@ def run(args: argparse.Namespace) -> None:
         all_restarts=all_restarts,
         selected_restart=selected_restart,
         config=config,
+        a_type=args.a_type,
         global_seed=args.seed,
         candidate_digest=candidate_digest,
         target_digest=target_digest,
         store_dir=getattr(store, "store_dir", args.store),
         elapsed=time.perf_counter() - started,
+        eligibility_identity=eligibility_identity,
+        stratum_quotas=quotas,
+        stratum_counts=stratum_counts,
+        stratum_target_mass=stratum_target_mass,
+        stratum_capacity=stratum_capacity,
+        init_mode=args.init_mode,
     )
     if not args.keep_work:
         shutil.rmtree(work_dir)
@@ -1159,12 +1470,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--store", type=Path, required=True,
                         help="interval store supplying candidate SNP ages")
     parser.add_argument("--target", type=Path, required=True,
-                        help="TE target directory from normalize_tes.te_age_target; supplies "
+                        help="focal A target from normalize_tes.te_age_target; supplies "
                              "the age CDF, the acceptance threshold and the strata")
+    parser.add_argument(
+        "-A", "--a-type", choices=("TE", "SNP"), default="TE",
+        help="variant type of focal target A; must match target metadata (default: TE)",
+    )
     parser.add_argument("--init-oversample", type=int, default=20,
                         help="candidates drawn per required site when filling the "
                              "initial age strata. Larger fills the strata better "
                              "and costs one narrow store read per candidate")
+    parser.add_argument("--init-mode", choices=("median", "mass", "random"),
+                        default="median",
+                        help="how each restart's initial set is drawn: fill the "
+                             "median-age stratum quotas (default), greedily match "
+                             "the target's per-stratum age mass, or draw uniformly "
+                             "at random ignoring age")
     candidates = parser.add_mutually_exclusive_group(required=True)
     candidates.add_argument("--candidate-rows", type=Path,
                             help="control universe from normalize_tes.build_candidate_rows, "
@@ -1187,7 +1508,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--replicates", type=int, default=1001,
         help="bootstrap replicates to match, one published control set each "
-             "(default: 1001, comprising one reference and 1000 null sets)",
+             "(default: 1001; Phi-SFS draws B0 from the QC-passing sets and "
+             "uses every other QC-passing set as a null)",
     )
     parser.add_argument(
         "--restarts", type=int, default=3,
@@ -1234,7 +1556,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="publish mutually disjoint sets: each replicate is optimized "
              "against the candidate universe minus every row already published, "
              "so no control SNP appears in two published sets. A preflight "
-             "requires at least replicates x target-sites candidates. This removes "
+             "requires at least replicates x target-sites candidates in total "
+             "and, in every target age stratum, replicates x the target's age "
+             "mass in candidate age mass. This removes "
              "shared membership, not statistical dependence: replicates still "
              "share the observed TE sample and the store, and later sets draw "
              "from a pool the earlier ones depleted",

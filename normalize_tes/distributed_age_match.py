@@ -92,7 +92,7 @@ def _context(args: argparse.Namespace) -> dict[str, Any]:
     if not expected_content or not actual_content:
         raise ValueError(
             "distributed matching requires target and store content digests; "
-            "rebuild the interval store and target with normalizeTE 0.2.1 or later"
+            "rebuild the interval store and target with PhiTE 0.2.1 or later"
         )
     if expected_content != actual_content:
         raise ValueError("target and interval store contents do not match")

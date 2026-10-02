@@ -1,19 +1,30 @@
+import csv
 import gzip
+import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from ancestral_table_helpers import stamp_ancestral_table
+from normalize_tes import phi_sfs as phi_sfs_module
 from normalize_tes.phi_sfs import (
+    ASYMMETRIC_NULL_DESIGN,
+    PROJECTION_SIZE,
+    RETAINED_BINS,
+    SCHEMA_VERSION,
+    SYMMETRIC_NULL_DESIGN,
     SiteCount,
     accumulate_spectrum,
     calibrate_phi,
     hypergeometric_projection,
     main,
     normalized_spectrum,
+    parse_args,
     phi_sfs,
     project_sites,
+    project_sites_bernoulli_q,
 )
 from normalize_tes.sample_age_matched_controls import _sha256_arrays
 
@@ -91,6 +102,37 @@ def test_sites_are_not_renormalized_after_endpoint_removal():
     assert raw_counts.sum() + endpoint == pytest.approx(eligible)
     raw, normalized = normalized_spectrum(raw_counts)
     assert normalized.sum() == pytest.approx(1)
+
+
+def test_bernoulli_q_projection_is_hard_reproducible_and_has_expected_rate():
+    counts = {
+        ("chr1", i): SiteCount(alt=4, callable=20, p_alt_derived=0.3)
+        for i in range(1, 10_001)
+    }
+    rows1, projected1, _ = project_sites_bernoulli_q(counts, seed=17)
+    rows2, projected2, _ = project_sites_bernoulli_q(
+        dict(reversed(counts.items())), seed=17
+    )
+    alt_derived = np.array([
+        projected1[rows1[coordinate]][3] == 1 for coordinate in counts
+    ])
+    assert alt_derived.mean() == pytest.approx(0.3, abs=0.015)
+    for coordinate in counts:
+        np.testing.assert_array_equal(
+            projected1[rows1[coordinate]], projected2[rows2[coordinate]]
+        )
+
+
+def test_mixture_polarity_null_is_default_with_explicit_bernoulli_opt_in():
+    required = [
+        "--target", "target", "--matches", "matches", "--vcf", "sites.vcf",
+        "--output", "output", "--ancestral-table", "ancestral",
+    ]
+    default = parse_args(required)
+    assert default.asymmetric_polarity_null is False
+    assert default.polarity_imputation_seed == 2001
+    bernoulli = parse_args([*required, "--asymmetric-polarity-null"])
+    assert bernoulli.asymmetric_polarity_null is True
 
 
 def test_accumulation_is_order_invariant_and_counts_repeats():
@@ -198,6 +240,20 @@ def test_phi_requires_explicit_grid_for_nondefault_spectra():
         phi_sfs(np.ones(3) / 3, np.ones(3) / 3)
 
 
+def test_phi_agrees_with_scipy_wasserstein_distance():
+    """`phi_sfs` is exactly a discrete Wasserstein-1 distance, not a lookalike."""
+    scipy_stats = pytest.importorskip("scipy.stats")
+    daf = RETAINED_BINS.astype(np.float64) / PROJECTION_SIZE
+    rng = np.random.default_rng(7)
+    for _ in range(10):
+        a = rng.random(daf.size)
+        a /= a.sum()
+        b = rng.random(daf.size)
+        b /= b.sum()
+        expected = scipy_stats.wasserstein_distance(daf, daf, a, b)
+        assert phi_sfs(a, b, daf=daf).value == pytest.approx(expected)
+
+
 # ----------------------------------------------------------- null calibration
 
 
@@ -247,8 +303,29 @@ def test_calibrate_phi_rejects_invalid_input(observed, null, message):
 # -------------------------------------------------------------- the fixtures
 
 
-def _write_bundle(root: Path, *, positions=None, row_indices=None, target_digest=None):
-    """Write a target and matched-control bundle that pass provenance checks."""
+def _write_bundle(
+    root: Path,
+    *,
+    positions=None,
+    row_indices=None,
+    target_digest=None,
+    a_type="TE",
+    include_te_polarity=False,
+    max_flipped_fraction=0.5,
+    heterozygous="error",
+):
+    """Write a target and matched-control bundle that pass provenance checks.
+
+    Defaults declare a valid TE target: `a_type` "TE", no `te_polarity` record
+    (a masked target is refused), and a `vcf_eligibility` record carrying an
+    `identity` dict. `include_te_polarity=True` writes a masked-target record
+    at `max_flipped_fraction`. The matched-control metadata mirrors `a_type`
+    and carries the identical `vcf_eligibility_identity` dict, as the matcher
+    is contracted to copy it from the candidate report. `identity["vcf_sha256"]`
+    is a placeholder here because no VCF exists yet at bundle-construction
+    time; `_run` (or a direct call to `_sync_vcf_identity`) fills in the real
+    digest once the fixture's VCF is written.
+    """
     target = root / "target"
     matches = root / "matches"
     target.mkdir()
@@ -286,17 +363,34 @@ def _write_bundle(root: Path, *, positions=None, row_indices=None, target_digest
             np.arange(100, 100 + replicate_count, dtype=np.uint64), allow_pickle=False)
     np.save(matches / "bootstrap_counts.npy",
             np.ones((replicate_count, te_rows.size), dtype=np.uint32), allow_pickle=False)
+    unique_rows = np.unique(np.asarray(row_indices, dtype=np.int64))
+    np.save(matches / "reuse_row_indices.npy", unique_rows, allow_pickle=False)
     np.save(matches / "reuse_counts.npy",
-            np.ones(np.size(row_indices), dtype=np.uint16), allow_pickle=False)
+            np.ones(unique_rows.shape, dtype=np.uint16), allow_pickle=False)
 
     digest = _sha256_arrays(
         te_rows, cdf, ages, np.asarray([threshold], dtype=np.float64)
     )
-    (target / "metadata.json").write_text(json.dumps({
+    identity = {
+        "vcf_sha256": "0" * 64,   # placeholder; _sync_vcf_identity fills this in
+        "heterozygous": heterozygous,
+        "min_callable": 20,
+        "store_content_sha256": "store",
+        "row_indices_sha256": "rows",
+        "snp_row_indices_sha256": "snp_rows",
+        "p_alt_derived_sha256": "polarity",
+    }
+    vcf_eligibility = {"mask": str((root / "eligibility").resolve()), "identity": identity}
+    target_metadata = {
         "source_store_content_sha256": "store",
         "source_catalog_sha256": "catalog",
         "wasserstein_threshold_generations": threshold,
-    }))
+        "a_type": a_type,
+        "vcf_eligibility": vcf_eligibility,
+    }
+    if include_te_polarity:
+        target_metadata["te_polarity"] = {"max_flipped_fraction": max_flipped_fraction}
+    (target / "metadata.json").write_text(json.dumps(target_metadata))
     (matches / "metadata.json").write_text(json.dumps({
         "schema_version": "bootstrap-target-matches-v1",
         "source_store_content_sha256": "store",
@@ -306,8 +400,32 @@ def _write_bundle(root: Path, *, positions=None, row_indices=None, target_digest
         "phi_sfs_selection_blind": True,
         "maximum_control_reuse": 1,
         "config": {"disjoint_replicates": True},
+        "a_type": a_type,
+        "vcf_eligibility_identity": dict(identity),
     }))
     return target, matches
+
+
+def _sync_vcf_identity(target: Path, matches: Path, vcf: Path) -> None:
+    """Patch the identity's `vcf_sha256` to match this fixture's actual VCF.
+
+    `_write_bundle` writes metadata before the VCF exists, so the digest it
+    records is a placeholder. `_run` calls this automatically so the ordinary
+    end-to-end tests get a consistent, passing identity without each test
+    having to know about it. A test that wants to exercise the digest-mismatch
+    check calls `_run(..., sync_identity=False)` after pinning the identity to
+    a different VCF's digest itself.
+    """
+    digest = hashlib.sha256(Path(vcf).read_bytes()).hexdigest()
+    target_meta_path = target / "metadata.json"
+    target_meta = json.loads(target_meta_path.read_text())
+    target_meta["vcf_eligibility"]["identity"]["vcf_sha256"] = digest
+    target_meta_path.write_text(json.dumps(target_meta))
+
+    matches_meta_path = matches / "metadata.json"
+    matches_meta = json.loads(matches_meta_path.read_text())
+    matches_meta["vcf_eligibility_identity"]["vcf_sha256"] = digest
+    matches_meta_path.write_text(json.dumps(matches_meta))
 
 
 def _record(position: int, derived: int, *, callable_count: int = 20, info: str = "."):
@@ -364,24 +482,37 @@ def _ancestral_table(tmp_path, positions=(10, 20, 30, 40, 50, 60, 70, 80)):
     np.save(table / "present_draw_count.npy",
             np.full(len(positions), 75, dtype=np.uint16))
     (table / "metadata.json").write_text(json.dumps({
-        "schema_version": "ancestral-state-counts-v1",
         "bases": ["A", "C", "G", "T"],
         "store": str(store),
         "store_content_sha256": "store",   # matches the bundle fixture's digest
         "store_rows": len(positions),
         "complete": True,
     }), encoding="utf-8")
-    return table
+    return stamp_ancestral_table(table)
 
 
-def _run(target, matches, vcf, output, *extra):
+def _run(target, matches, vcf, output, *extra, sync_identity=True, reference=0,
+         restamp_table=True):
+    """Run the CLI with a floor of 2 nulls.
+
+    Hand-calculated tests fix B0 at replicate 0 through `reference`; pass
+    `reference=None` to exercise the default seeded draw of B0.
+    """
+    if sync_identity:
+        _sync_vcf_identity(target, matches, Path(vcf))
     argv = [
         "--target", str(target), "--matches", str(matches),
         "--vcf", str(vcf), "--output", str(output),
         "--min-null-replicates", "2", *extra,
     ]
+    if reference is not None and "--reference-replicate" not in extra:
+        argv += ["--reference-replicate", str(reference)]
     if "--ancestral-table" not in argv:
         argv += ["--ancestral-table", str(_ancestral_table(Path(output).parent))]
+    if restamp_table:
+        # Tests edit the table's arrays after building it; re-record their
+        # digests unless the test is exercising the digest check itself.
+        stamp_ancestral_table(Path(argv[argv.index("--ancestral-table") + 1]))
     return main(argv)
 
 
@@ -439,7 +570,11 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
 
     metadata = json.loads((output / "metadata.json").read_text())
     assert metadata["complete"] is True
-    assert metadata["schema_version"] == "phi-sfs-wasserstein-v1"
+    assert metadata["schema_version"] == SCHEMA_VERSION
+    assert metadata["null_polarity_design"] == SYMMETRIC_NULL_DESIGN
+    assert metadata["polarity_imputation_seed"] is None
+    assert metadata["te_sites_polarized"] == 2
+    assert metadata["te_polarity_source"] == "ARG posterior ancestral table, as for SNPs"
     assert metadata["accepted_null_replicates"] == 2
     assert metadata["a_eligible_sites"] == 2
     assert metadata["equal_eligible_site_count"] == 2
@@ -452,7 +587,7 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
     assert metadata["a_retained_fraction"] == pytest.approx(1)
     assert metadata["a_endpoint_fraction"] == pytest.approx(0)
     assert metadata["distinct_projections"] == 5
-    assert metadata["software"]["name"] == "normalizeTE"
+    assert metadata["software"]["name"] == "PhiTE"
     assert metadata["creation_command"]
     assert metadata["creation_time_utc"]
     assert metadata["numpy_version"]
@@ -460,6 +595,9 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
     assert metadata["target_digest"] == json.loads(
         (matches / "metadata.json").read_text()
     )["target_digest"]
+    assert metadata["vcf_eligibility_identity"] == json.loads(
+        (target / "metadata.json").read_text()
+    )["vcf_eligibility"]["identity"]
 
     summary_header, summary_values = (
         line.split(",") for line in (output / "summary.csv").read_text().splitlines()
@@ -469,9 +607,26 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
     assert float(summary["p_value"]) == pytest.approx(1.0)
 
 
-def test_vcf_sha256_matches_a_direct_digest(tmp_path):
-    import hashlib
+def test_comparisons_reuse_columns_are_present_and_equal_one(tmp_path):
+    """A valid disjoint bundle has every control used exactly once, everywhere."""
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output) == 0
 
+    with (output / "comparisons.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["role"] == "observed"
+    assert rows[0]["left_max_control_reuse"] == ""
+    assert rows[0]["right_max_control_reuse"] == "1"
+    for row in rows[1:]:
+        assert row["role"] == "null"
+        assert row["left_max_control_reuse"] == "1"
+        assert row["right_max_control_reuse"] == "1"
+
+
+def test_vcf_sha256_matches_a_direct_digest(tmp_path):
     target, matches = _write_bundle(tmp_path)
     vcf = tmp_path / "sites.vcf"
     vcf.write_text(_vcf_text())
@@ -481,8 +636,6 @@ def test_vcf_sha256_matches_a_direct_digest(tmp_path):
 
 
 def test_compressed_input_is_read_and_hashed(tmp_path):
-    import hashlib
-
     target, matches = _write_bundle(tmp_path)
     vcf = tmp_path / "sites.vcf.bgz"
     vcf.write_bytes(gzip.compress(_vcf_text().encode()))
@@ -502,7 +655,8 @@ def test_heterozygous_calls_fail_by_default(tmp_path):
 
 
 def test_heterozygous_missing_policy_drops_the_individual(tmp_path):
-    target, matches = _write_bundle(tmp_path)
+    # The eligibility mask's recorded policy must agree with --heterozygous.
+    target, matches = _write_bundle(tmp_path, heterozygous="missing")
     vcf = tmp_path / "sites.vcf"
     # Site 10 loses one derived individual: k = 3 among n = 19, so it is dropped.
     vcf.write_text(_vcf_text().replace("\t1\t", "\t0/1\t", 1))
@@ -530,8 +684,44 @@ def test_existing_output_is_never_overwritten(tmp_path):
         _run(target, matches, vcf, output)
 
 
-def test_end_to_end_snp_a_uses_posterior_polarity(tmp_path):
+def test_calculate_is_byte_reproducible(tmp_path):
     target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    out1 = tmp_path / "phi1"
+    out2 = tmp_path / "phi2"
+    assert _run(target, matches, vcf, out1) == 0
+    assert _run(target, matches, vcf, out2) == 0
+
+    names1 = sorted(path.name for path in out1.glob("*.npy"))
+    names2 = sorted(path.name for path in out2.glob("*.npy"))
+    assert names1 == names2
+    for name in names1:
+        assert (out1 / name).read_bytes() == (out2 / name).read_bytes(), name
+
+
+def test_injected_publish_failure_leaves_no_output_or_staging(tmp_path, monkeypatch):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    output = tmp_path / "phi"
+
+    def failing_dump(*args, **kwargs):
+        raise RuntimeError("injected failure")
+
+    # metadata.json is written last, after every .npy file and both CSVs, so
+    # this exercises cleanup of a staging directory that already holds output.
+    monkeypatch.setattr(phi_sfs_module.json, "dump", failing_dump)
+
+    with pytest.raises(RuntimeError, match="injected failure"):
+        _run(target, matches, vcf, output)
+
+    assert not output.exists()
+    assert list(output.parent.glob(f".{output.name}.tmp.*")) == []
+
+
+def test_end_to_end_snp_a_uses_posterior_polarity(tmp_path):
+    target, matches = _write_bundle(tmp_path, a_type="SNP")
     vcf = tmp_path / "sites.vcf"
     vcf.write_text(_vcf_text())
     table = _ancestral_table(tmp_path)
@@ -549,6 +739,7 @@ def test_end_to_end_snp_a_uses_posterior_polarity(tmp_path):
     assert _run(
         target, matches, vcf, output,
         "-A", "SNP", "-B", "SNP", "--ancestral-table", str(table),
+        "--no-asymmetric-polarity-null",
     ) == 0
     a = np.load(output / "a_normalized_sfs.npy")
     assert a[3] == pytest.approx(0.125)    # q * site 10 at bin 4
@@ -559,12 +750,173 @@ def test_end_to_end_snp_a_uses_posterior_polarity(tmp_path):
     assert metadata["a_type"] == "SNP"
     assert metadata["b_type"] == "SNP"
     assert metadata["te_sites_polarized"] == 0
+    assert metadata["null_polarity_design"] == SYMMETRIC_NULL_DESIGN
+    assert metadata["polarity_imputation_seed"] is None
+    assert not (output / "b_bernoulli_q_normalized_sfs.npy").exists()
     header, values = (
         line.split(",") for line in (output / "summary.csv").read_text().splitlines()
     )
     summary = dict(zip(header, values))
     assert summary["a_type"] == "SNP"
     assert summary["b_type"] == "SNP"
+
+
+def test_asymmetric_null_uses_hard_snp_left_and_mixture_reference(tmp_path):
+    target, matches = _write_bundle(tmp_path, a_type="SNP")
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    table = _ancestral_table(tmp_path)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[:, 0] = 25
+    counts[:, 2] = 75
+    np.save(table / "ancestral_counts.npy", counts)
+    np.save(
+        table / "present_draw_count.npy",
+        np.full(counts.shape[0], 100, dtype=np.uint16),
+    )
+
+    output = tmp_path / "phi"
+    assert _run(
+        target, matches, vcf, output,
+        "-A", "SNP", "-B", "SNP", "--ancestral-table", str(table),
+        "--asymmetric-polarity-null", "--polarity-imputation-seed", "17",
+    ) == 0
+    a = np.load(output / "a_normalized_sfs.npy")
+    b_mix = np.load(output / "b_normalized_sfs.npy")
+    b_hard = np.load(output / "b_bernoulli_q_normalized_sfs.npy")
+    assert np.count_nonzero(a) == 2
+    assert not np.array_equal(b_mix, b_hard)
+    assert np.load(output / "observed_phi_sfs.npy").item() == pytest.approx(
+        phi_sfs(a, b_mix[0]).value
+    )
+    assert np.load(output / "null_phi_sfs.npy").tolist() == pytest.approx([
+        phi_sfs(b_hard[1], b_mix[0]).value,
+        phi_sfs(b_hard[2], b_mix[0]).value,
+    ])
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["asymmetric_polarity_null"] is True
+    assert metadata["null_polarity_design"] == ASYMMETRIC_NULL_DESIGN
+    assert metadata["polarity_imputation_seed"] == 17
+    assert metadata["a_polarity_rule"] == "coordinate-keyed hard Bernoulli(q) orientation"
+    assert metadata["null_left_polarity_rule"] == (
+        "coordinate-keyed hard Bernoulli(q) orientation"
+    )
+    with (output / "summary.csv").open(newline="", encoding="utf-8") as handle:
+        summary = next(csv.DictReader(handle))
+    assert summary["null_polarity_design"] == ASYMMETRIC_NULL_DESIGN
+    assert summary["polarity_imputation_seed"] == "17"
+    with (output / "comparisons.csv").open(newline="", encoding="utf-8") as handle:
+        comparisons = list(csv.DictReader(handle))
+    assert comparisons[0]["left_polarity_rule"] == metadata["a_polarity_rule"]
+    assert all(
+        row["right_polarity_rule"] == metadata["b_polarity_rule"]
+        for row in comparisons
+    )
+    assert all(
+        row["left_polarity_rule"] == metadata["null_left_polarity_rule"]
+        for row in comparisons[1:]
+    )
+
+
+def test_default_te_is_posterior_mixture_like_its_controls(tmp_path):
+    """A TE is oriented by the ARG exactly as a SNP is, and so are the nulls.
+
+    q = 0.25 at every site (A called ancestral by 25 of 100 draws), so each TE
+    contributes 0.25 at its ALT count and 0.75 at the absence count.
+    """
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    table = _ancestral_table(tmp_path)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[:, 0] = 25
+    counts[:, 2] = 75
+    np.save(table / "ancestral_counts.npy", counts)
+    np.save(
+        table / "present_draw_count.npy",
+        np.full(counts.shape[0], 100, dtype=np.uint16),
+    )
+
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    a = np.load(output / "a_normalized_sfs.npy")
+    assert a[3] == pytest.approx(0.125)    # q * TE at 10 (k=4), bin 4
+    assert a[15] == pytest.approx(0.375)   # (1-q) * TE at 10, bin 16
+    assert a[7] == pytest.approx(0.125)    # q * TE at 20 (k=8), bin 8
+    assert a[11] == pytest.approx(0.375)   # (1-q) * TE at 20, bin 12
+    b_mix = np.load(output / "b_normalized_sfs.npy")
+    assert np.load(output / "observed_phi_sfs.npy").item() == pytest.approx(
+        phi_sfs(a, b_mix[0]).value
+    )
+    assert np.load(output / "null_phi_sfs.npy").tolist() == pytest.approx([
+        phi_sfs(b_mix[1], b_mix[0]).value,
+        phi_sfs(b_mix[2], b_mix[0]).value,
+    ])
+    assert not (output / "b_bernoulli_q_normalized_sfs.npy").exists()
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["a_polarity_rule"] == metadata["b_polarity_rule"]
+    assert metadata["null_left_polarity_rule"] == metadata["b_polarity_rule"]
+    assert metadata["null_polarity_design"] == SYMMETRIC_NULL_DESIGN
+    assert metadata["te_sites_polarized"] == 2
+    assert metadata["te_usable_arg_draws"] == 200
+
+
+def test_bernoulli_design_hard_orients_te_a_like_the_nulls(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    table = _ancestral_table(tmp_path)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[:, 0] = 25
+    counts[:, 2] = 75
+    np.save(table / "ancestral_counts.npy", counts)
+    np.save(
+        table / "present_draw_count.npy",
+        np.full(counts.shape[0], 100, dtype=np.uint16),
+    )
+
+    output = tmp_path / "phi"
+    assert _run(
+        target, matches, vcf, output, "--ancestral-table", str(table),
+        "--asymmetric-polarity-null", "--polarity-imputation-seed", "17",
+    ) == 0
+    a = np.load(output / "a_normalized_sfs.npy")
+    b_mix = np.load(output / "b_normalized_sfs.npy")
+    b_hard = np.load(output / "b_bernoulli_q_normalized_sfs.npy")
+    assert np.count_nonzero(a) == 2
+    assert np.load(output / "observed_phi_sfs.npy").item() == pytest.approx(
+        phi_sfs(a, b_mix[0]).value
+    )
+    assert np.load(output / "null_phi_sfs.npy").tolist() == pytest.approx([
+        phi_sfs(b_hard[1], b_mix[0]).value,
+        phi_sfs(b_hard[2], b_mix[0]).value,
+    ])
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["a_polarity_rule"] == "coordinate-keyed hard Bernoulli(q) orientation"
+    assert metadata["null_polarity_design"] == ASYMMETRIC_NULL_DESIGN
+
+
+def test_te_with_absence_derived_counts_at_absence_frequency(tmp_path):
+    """A draw set calling presence (G) ancestral makes absence the derived allele."""
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    table = _ancestral_table(tmp_path)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[0, 0] = 0      # TE at 10, k = 4: no draw calls absence ancestral
+    counts[0, 2] = 100
+    np.save(table / "ancestral_counts.npy", counts)
+    np.save(
+        table / "present_draw_count.npy",
+        np.full(counts.shape[0], 100, dtype=np.uint16),
+    )
+
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    a = np.load(output / "a_normalized_sfs.npy")
+    assert a[15] == pytest.approx(0.5)    # absence derived at 16 of 20
+    assert a[7] == pytest.approx(0.5)     # TE at 20 keeps presence derived, bin 8
+    assert a[3] == pytest.approx(0.0)
 
 
 def test_explicit_reference_id_controls_b0_and_null_identities(tmp_path):
@@ -666,6 +1018,258 @@ def test_minimum_null_count_is_enforced(tmp_path):
             target, matches, vcf, tmp_path / "phi",
             "--min-null-replicates", "3",
         )
+
+
+def _spare_set_bundle(tmp_path):
+    """Four matched sets: B0 plus up to three nulls."""
+    target, matches = _write_bundle(
+        tmp_path,
+        positions=np.array([[30, 40], [50, 60], [70, 80], [90, 100]]),
+        row_indices=np.array([[2, 3], [4, 5], [6, 7], [8, 9]], dtype=np.int64),
+    )
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text() + _record(90, 2) + "\n" + _record(100, 6) + "\n")
+    table = _ancestral_table(
+        tmp_path, positions=(10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+    )
+    return target, matches, vcf, table
+
+
+def test_every_qc_passing_set_other_than_b0_is_a_null(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    assert np.load(output / "null_replicate_id.npy").tolist() == [1, 2, 3]
+    assert np.load(output / "b_replicate_id.npy").tolist() == [0, 1, 2, 3]
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["accepted_null_replicates"] == 3
+    assert metadata["minimum_null_replicates"] == 2
+    assert metadata["matched_sets_published"] == 4
+    assert metadata["matched_sets_failing_qc"] == 0
+    assert metadata["null_selection_rule"] == "every QC-passing non-reference set"
+    summary = dict(zip(*(
+        line.split(",") for line in (output / "summary.csv").read_text().splitlines()
+    )))
+    assert summary["null_replicates_r"] == "3"
+    assert float(summary["minimum_attainable_p"]) == pytest.approx(1 / 4)
+
+
+def test_a_failed_set_simply_reduces_r(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    qc = np.load(matches / "qc_pass.npy")
+    qc[1] = False
+    np.save(matches / "qc_pass.npy", qc)
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    assert np.load(output / "null_replicate_id.npy").tolist() == [2, 3]
+    assert np.load(output / "b_replicate_id.npy").tolist() == [0, 2, 3]
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["matched_sets_failing_qc"] == 1
+    assert metadata["accepted_null_replicates"] == 2
+
+
+def test_default_b0_is_a_reproducible_seeded_draw(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    first, second = tmp_path / "phi1", tmp_path / "phi2"
+    for output in (first, second):
+        assert _run(
+            target, matches, vcf, output, "--ancestral-table", str(table),
+            reference=None,
+        ) == 0
+    reference = np.load(first / "reference_replicate_id.npy").item()
+    assert np.load(second / "reference_replicate_id.npy").item() == reference
+    assert reference in (0, 1, 2, 3)
+    nulls = np.load(first / "null_replicate_id.npy").tolist()
+    assert sorted(nulls + [reference]) == [0, 1, 2, 3]
+    metadata = json.loads((first / "metadata.json").read_text())
+    assert metadata["reference_seed"] == 1002
+    assert metadata["reference_selection_rule"].startswith("uniform draw from QC-passing sets")
+
+
+def test_reference_seed_changes_the_drawn_b0(tmp_path):
+    """Some seed among a handful must pick a different B0 from four sets."""
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    drawn = set()
+    for seed in range(8):
+        output = tmp_path / f"phi{seed}"
+        assert _run(
+            target, matches, vcf, output, "--ancestral-table", str(table),
+            "--reference-seed", str(seed), reference=None,
+        ) == 0
+        drawn.add(np.load(output / "reference_replicate_id.npy").item())
+    assert len(drawn) > 1
+
+
+def test_a_drawn_b0_never_fails_qc(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    qc = np.load(matches / "qc_pass.npy")
+    qc[0] = False
+    np.save(matches / "qc_pass.npy", qc)
+    for seed in range(6):
+        output = tmp_path / f"phi{seed}"
+        assert _run(
+            target, matches, vcf, output, "--ancestral-table", str(table),
+            "--reference-seed", str(seed), reference=None,
+        ) == 0
+        assert np.load(output / "reference_replicate_id.npy").item() in (1, 2, 3)
+
+
+def _sensitivity_bundle(tmp_path):
+    """Five matched sets (ids 0-4).
+
+    A sensitivity rerun's own null set can then reach a set the primary run
+    never touches, exercising the requirement that every set any analysis
+    uses -- not just the primary accepted set -- gets scanned.
+    """
+    target, matches = _write_bundle(
+        tmp_path,
+        positions=np.array(
+            [[30, 40], [50, 60], [70, 80], [90, 100], [110, 120]]
+        ),
+        row_indices=np.array(
+            [[2, 3], [4, 5], [6, 7], [8, 9], [10, 11]], dtype=np.int64
+        ),
+    )
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(
+        _vcf_text()
+        + _record(90, 2) + "\n" + _record(100, 6) + "\n"
+        + _record(110, 5) + "\n" + _record(120, 9) + "\n"
+    )
+    table = _ancestral_table(
+        tmp_path,
+        positions=(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120),
+    )
+    return target, matches, vcf, table
+
+
+def test_reference_sensitivity_selection_and_primary_arrays_unchanged(tmp_path):
+    """With reference id 2, sensitivity N=2 draws two other QC-passing sets.
+
+    The alternatives come from the same seeded permutation that would draw B0,
+    so they are prespecified, distinct, never the primary reference, and
+    reproducible. Requesting sensitivity must not perturb any primary array.
+    """
+    target, matches, vcf, table = _sensitivity_bundle(tmp_path)
+
+    out_plain = tmp_path / "phi_plain"
+    assert _run(
+        target, matches, vcf, out_plain,
+        "--reference-replicate", "2", "--ancestral-table", str(table),
+    ) == 0
+
+    out_sensitivity = tmp_path / "phi_sensitivity"
+    assert _run(
+        target, matches, vcf, out_sensitivity,
+        "--reference-replicate", "2", "--reference-sensitivity", "2",
+        "--ancestral-table", str(table),
+    ) == 0
+
+    for name in (
+        "observed_phi_sfs.npy", "null_phi_sfs.npy", "null_z_scores.npy",
+        "a_normalized_sfs.npy", "b_normalized_sfs.npy", "b_raw_sfs.npy",
+        "reference_replicate_id.npy", "null_replicate_id.npy",
+        "b_replicate_id.npy",
+    ):
+        np.testing.assert_array_equal(
+            np.load(out_plain / name), np.load(out_sensitivity / name)
+        )
+
+    def _summary(directory):
+        header, values = (
+            line.split(",") for line in (directory / "summary.csv").read_text().splitlines()
+        )
+        return dict(zip(header, values))
+
+    plain_summary = _summary(out_plain)
+    sensitivity_summary = _summary(out_sensitivity)
+    for key in ("observed_phi_sfs", "null_mean", "null_sample_sd", "z_score", "p_value"):
+        assert plain_summary[key] == sensitivity_summary[key]
+
+    ids = np.load(out_sensitivity / "sensitivity_reference_ids.npy")
+    assert len(set(ids.tolist())) == 2
+    assert set(ids.tolist()) <= {0, 1, 3, 4}
+    rerun = tmp_path / "phi_sensitivity_rerun"
+    assert _run(
+        target, matches, vcf, rerun,
+        "--reference-replicate", "2", "--reference-sensitivity", "2",
+        "--ancestral-table", str(table),
+    ) == 0
+    np.testing.assert_array_equal(np.load(rerun / "sensitivity_reference_ids.npy"), ids)
+    z_scores = np.load(out_sensitivity / "sensitivity_z_scores.npy")
+    p_values = np.load(out_sensitivity / "sensitivity_p_values.npy")
+    observed = np.load(out_sensitivity / "sensitivity_observed_phi_sfs.npy")
+    assert z_scores.shape == (2,)
+    assert p_values.shape == (2,)
+    assert observed.shape == (2,)
+
+    metadata = json.loads((out_sensitivity / "metadata.json").read_text())
+    assert metadata["reference_sensitivity_run"] is True
+    assert metadata["reference_sensitivity_n"] == 2
+    assert metadata["reference_sensitivity_reference_ids"] == ids.tolist()
+
+    plain_metadata = json.loads((out_plain / "metadata.json").read_text())
+    assert plain_metadata["reference_sensitivity_run"] is False
+    assert plain_metadata["reference_sensitivity_n"] == 0
+
+    header, values = (
+        line.split(",")
+        for line in (out_sensitivity / "summary.csv").read_text().splitlines()
+    )
+    summary = dict(zip(header, values))
+    assert summary["reference_sensitivity_n"] == "2"
+    assert float(summary["reference_sensitivity_z_min"]) == pytest.approx(
+        float(min(z_scores))
+    )
+    assert float(summary["reference_sensitivity_z_max"]) == pytest.approx(
+        float(max(z_scores))
+    )
+    assert float(summary["reference_sensitivity_p_min"]) == pytest.approx(
+        float(min(p_values))
+    )
+    assert float(summary["reference_sensitivity_p_max"]) == pytest.approx(
+        float(max(p_values))
+    )
+
+
+def test_reference_sensitivity_fails_if_too_few_alternatives(tmp_path):
+    """Five sets leave four alternatives to reference id 3, not five."""
+    target, matches, vcf, table = _sensitivity_bundle(tmp_path)
+    with pytest.raises(ValueError, match="only 4 other QC-passing sets exist"):
+        _run(
+            target, matches, vcf, tmp_path / "phi",
+            "--reference-replicate", "3", "--reference-sensitivity", "5",
+            "--ancestral-table", str(table),
+        )
+
+
+def test_reference_sensitivity_defaults_to_zero_and_publishes_empty_arrays(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output) == 0
+
+    header, values = (
+        line.split(",") for line in (output / "summary.csv").read_text().splitlines()
+    )
+    summary = dict(zip(header, values))
+    assert summary["reference_sensitivity_n"] == "0"
+    assert summary["reference_sensitivity_z_min"] == ""
+    assert summary["reference_sensitivity_z_max"] == ""
+    assert summary["reference_sensitivity_p_min"] == ""
+    assert summary["reference_sensitivity_p_max"] == ""
+
+    for name in (
+        "sensitivity_reference_ids.npy", "sensitivity_observed_phi_sfs.npy",
+        "sensitivity_z_scores.npy", "sensitivity_p_values.npy",
+    ):
+        assert np.load(output / name).shape == (0,)
+
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["reference_sensitivity_run"] is False
+    assert metadata["reference_sensitivity_n"] == 0
+    assert metadata["reference_sensitivity_reference_ids"] == []
 
 
 def test_equal_eligible_site_count_is_enforced(tmp_path):
@@ -857,14 +1461,11 @@ def test_duplicate_controls_within_a_set_are_rejected(tmp_path):
 
 
 def test_table_calling_alt_ancestral_reverses_polarization(tmp_path):
-    """Flipping the table mirrors the control spectra and leaves the TE one alone.
+    """Flipping the table mirrors the TE and control spectra alike.
 
-    Every record is `A`/`G`. For a control SNP, a table naming `A` ancestral
-    makes the derived count its ALT count, and naming `G` ancestral makes it
-    `n - alt`, so the two control spectra must be mirror images. TE sites are
-    polarized by biology and never consult the table, so the TE spectrum must be
-    identical across the two runs -- which is the asymmetry the two-arm design
-    exists to produce.
+    Every record is `A`/`G`. A table naming `A` ancestral makes the derived
+    count the ALT count, and naming `G` ancestral makes it `n - alt`. TE sites
+    are polarized from the same table as SNPs, so both A and B must mirror.
     """
     target, matches = _write_bundle(tmp_path)
     vcf = tmp_path / "v.vcf"
@@ -885,12 +1486,10 @@ def test_table_calling_alt_ancestral_reverses_polarization(tmp_path):
     assert _run(target, matches, vcf, out_r, "--ancestral-table",
                 str(reversed_table)) == 0
 
-    # The TE spectrum is polarized by biology and must be untouched by the table.
     np.testing.assert_allclose(
         np.load(out_f / "a_normalized_sfs.npy"),
-        np.load(out_r / "a_normalized_sfs.npy"), atol=1e-12,
+        np.load(out_r / "a_normalized_sfs.npy")[::-1], atol=1e-12,
     )
-    # The control spectra are polarized by the table, so they must mirror.
     a = np.load(out_f / "b_normalized_sfs.npy")
     b = np.load(out_r / "b_normalized_sfs.npy")
     np.testing.assert_allclose(a, b[:, ::-1], atol=1e-12)
@@ -914,3 +1513,175 @@ def test_site_the_table_cannot_orient_is_rejected(tmp_path):
     np.save(table / "ancestral_counts.npy", counts)
     with pytest.raises(ValueError, match="cannot be polarized"):
         _run(target, matches, vcf, tmp_path / "out", "--ancestral-table", str(table))
+
+
+# --------------------------------------- target authority and VCF identity
+
+
+def test_snp_target_run_with_a_type_te_is_rejected(tmp_path):
+    """A SNP target run with `-A TE` must fail, not silently mispolarize."""
+    target, matches = _write_bundle(tmp_path, a_type="SNP")
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    with pytest.raises(ValueError, match="disagrees with target metadata a_type"):
+        _run(target, matches, vcf, tmp_path / "phi", "-A", "TE")
+
+
+@pytest.mark.parametrize("a_type", ["TE", "SNP"])
+def test_target_built_with_te_polarity_mask_is_rejected(tmp_path, a_type):
+    target, matches = _write_bundle(tmp_path, a_type=a_type, include_te_polarity=True)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    with pytest.raises(ValueError, match="TE polarity mask"):
+        _run(target, matches, vcf, tmp_path / "phi", "-A", a_type)
+
+
+def test_target_and_match_vcf_eligibility_identity_mismatch_is_rejected(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    metadata = json.loads((target / "metadata.json").read_text())
+    metadata["vcf_eligibility"]["identity"]["row_indices_sha256"] = "different-rows"
+    (target / "metadata.json").write_text(json.dumps(metadata))
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    with pytest.raises(ValueError, match="vcf_eligibility_identity values differ"):
+        _run(target, matches, vcf, tmp_path / "phi")
+
+
+def test_heterozygous_policy_mismatch_is_rejected(tmp_path):
+    """The eligibility mask's policy must match `--heterozygous`, not just A/B."""
+    target, matches = _write_bundle(tmp_path, heterozygous="missing")
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    with pytest.raises(
+        ValueError, match="disagrees with the eligibility mask's policy"
+    ):
+        _run(target, matches, vcf, tmp_path / "phi")
+
+
+def test_vcf_digest_mismatch_is_rejected(tmp_path):
+    """A VCF with different bytes but identical sites must still be rejected.
+
+    Every requested site is still callable and identical, so nothing else in
+    `calculate()` would catch this; only the recorded `vcf_sha256` can.
+    """
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    _sync_vcf_identity(target, matches, vcf)   # pin identity to this VCF's digest
+
+    other_vcf = tmp_path / "other.vcf"
+    other_vcf.write_text(
+        _vcf_text().replace(
+            "##fileformat=VCFv4.2\n", "##fileformat=VCFv4.2\n##note=repacked\n"
+        )
+    )
+    with pytest.raises(
+        ValueError, match="the VCF differs from the one that defined eligibility"
+    ):
+        _run(target, matches, other_vcf, tmp_path / "phi", sync_identity=False)
+
+
+# ------------------------------------------------- ancestral-table integrity
+
+
+def test_ancestral_table_whose_array_was_changed_is_rejected(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text(_vcf_text(), encoding="utf-8")
+    table = _ancestral_table(tmp_path)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[3, 2] = 1           # one extra G-ancestral call: a plausible corruption
+    np.save(table / "ancestral_counts.npy", counts)
+    with pytest.raises(ValueError, match="does not match its recorded digest"):
+        _run(target, matches, vcf, tmp_path / "phi",
+             "--ancestral-table", str(table), restamp_table=False)
+
+
+def test_ancestral_table_without_digests_is_rejected(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text(_vcf_text(), encoding="utf-8")
+    table = _ancestral_table(tmp_path)
+    metadata = json.loads((table / "metadata.json").read_text())
+    metadata["schema_version"] = "ancestral-state-counts-v1"
+    del metadata["array_sha256"]
+    (table / "metadata.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="expected 'ancestral-state-counts-v2'"):
+        _run(target, matches, vcf, tmp_path / "phi",
+             "--ancestral-table", str(table), restamp_table=False)
+
+
+def test_ancestral_table_digests_are_recorded_in_output(tmp_path):
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text(_vcf_text(), encoding="utf-8")
+    table = _ancestral_table(tmp_path)
+    output = tmp_path / "phi"
+    assert _run(target, matches, vcf, output, "--ancestral-table", str(table)) == 0
+    metadata = json.loads((output / "metadata.json").read_text())
+    recorded = json.loads((table / "metadata.json").read_text())["array_sha256"]
+    assert metadata["ancestral_table_array_sha256"] == recorded
+
+
+# ------------------------------------------------------ fixed null count
+
+
+def _four_set_bundle(tmp_path):
+    """Bundle with four matched sets, so a cap of 2 leaves one set unused."""
+    target, matches = _write_bundle(
+        tmp_path,
+        positions=np.array([[30, 40], [50, 60], [70, 80], [90, 100]]),
+        row_indices=np.array([[2, 3], [4, 5], [6, 7], [8, 9]], dtype=np.int64),
+    )
+    header, body = _vcf_text().split("\n", 2)[:2], _vcf_text().split("\n", 2)[2]
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text("\n".join(header) + "\n" + body
+                   + _record(90, 5) + "\n" + _record(100, 9) + "\n", encoding="utf-8")
+    table = _ancestral_table(tmp_path, positions=tuple(range(10, 101, 10)))
+    return target, matches, vcf, table
+
+
+def test_max_null_replicates_takes_next_n_of_the_seeded_permutation(tmp_path):
+    target, matches, vcf, table = _four_set_bundle(tmp_path)
+    capped = tmp_path / "capped"
+    assert _run(target, matches, vcf, capped, "--ancestral-table", str(table),
+                "--max-null-replicates", "2", reference=None) == 0
+    full = tmp_path / "full"
+    assert _run(target, matches, vcf, full, "--ancestral-table", str(table),
+                reference=None) == 0
+    capped_meta = json.loads((capped / "metadata.json").read_text())
+    full_meta = json.loads((full / "metadata.json").read_text())
+
+    # Same seeded permutation, so the same B0 with or without the cap.
+    assert capped_meta["reference_replicate_id"] == full_meta["reference_replicate_id"]
+    selected = capped_meta["selected_null_replicate_ids"]
+    unused = capped_meta["unused_qc_passing_replicate_ids"]
+    assert len(selected) == 2 and len(unused) == 1
+    assert capped_meta["accepted_null_replicates"] == 2
+    assert capped_meta["qc_passing_sets"] == 4
+    assert capped_meta["max_null_replicates"] == 2
+    assert sorted(selected + unused + [capped_meta["reference_replicate_id"]]) == [0, 1, 2, 3]
+    assert np.load(capped / "null_replicate_id.npy").tolist() == selected
+    assert full_meta["max_null_replicates"] is None
+    assert full_meta["unused_qc_passing_replicate_ids"] == []
+    assert len(full_meta["selected_null_replicate_ids"]) == 3
+
+
+def test_max_null_replicates_fails_when_too_few_sets_pass_qc(tmp_path):
+    target, matches, vcf, table = _four_set_bundle(tmp_path)
+    np.save(matches / "qc_pass.npy", np.array([True, True, False, True]))
+    with pytest.raises(ValueError, match="requires 4"):
+        _run(target, matches, vcf, tmp_path / "phi", "--ancestral-table", str(table),
+             "--max-null-replicates", "3", reference=None)
+
+
+@pytest.mark.parametrize("extra, message", [
+    (("--reference-replicate", "1"), "--reference-replicate"),
+    (("--reference-sensitivity", "1"), "--reference-sensitivity"),
+    (("--min-null-replicates", "3"), "cannot exceed"),
+])
+def test_max_null_replicates_refuses_conflicting_options(tmp_path, extra, message):
+    target, matches, vcf, table = _four_set_bundle(tmp_path)
+    with pytest.raises(ValueError, match=message):
+        _run(target, matches, vcf, tmp_path / "phi", "--ancestral-table", str(table),
+             "--max-null-replicates", "2", *extra, reference=None)

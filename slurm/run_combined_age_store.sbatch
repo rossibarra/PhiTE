@@ -1,12 +1,12 @@
 #!/bin/bash -l
-#SBATCH --job-name=normalizeTE-store
+#SBATCH --job-name=PhiTE-store
 #SBATCH --account=jrigrp
 #SBATCH --partition=low
 #SBATCH --time=72:00:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=120G
-#SBATCH --output=results/normalizeTE-store-%j.out
-#SBATCH --error=results/normalizeTE-store-%j.err
+#SBATCH --output=results/PhiTE-store-%j.out
+#SBATCH --error=results/PhiTE-store-%j.err
 
 set -euo pipefail
 
