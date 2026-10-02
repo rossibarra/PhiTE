@@ -409,6 +409,45 @@ def _run_matcher(store, target, output, *extra, candidates=None):
     ])
 
 
+def test_bundle_seeds_come_from_the_target_inputs(tmp_path):
+    from normalize_tes.sample_age_matched_controls import (
+        TARGET_SEED_IDENTITY_RULE, _load_target, target_seed_identity,
+    )
+
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    output = tmp_path / "bootstrap_matches"
+    assert _run_matcher(store, target, output) == 0
+    rows, _, _, _, target_meta = _load_target(target)
+    identity = target_seed_identity(rows, target_meta)
+    match_meta = json.loads((output / "metadata.json").read_text())
+    assert match_meta["algorithm_version"] == "bootstrap-target-exact-greedy-v2"
+    assert match_meta["seed_identity_rule"] == TARGET_SEED_IDENTITY_RULE
+    assert match_meta["seed_identity"] == identity
+    seeds = np.load(output / "bootstrap_seeds.npy")
+    assert seeds.tolist() == [derive_seed(23, identity, r) for r in range(seeds.size)]
+
+
+def test_last_digit_threshold_change_does_not_change_the_sets(tmp_path):
+    """Another CPU or thread count moves the threshold in its last digits.
+    That changes the target digest but must not change the matched sets."""
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    first = tmp_path / "first"
+    assert _run_matcher(store, target, first) == 0
+    meta = json.loads((target / "metadata.json").read_text())
+    meta["wasserstein_threshold_generations"] += 1e-9
+    (target / "metadata.json").write_text(json.dumps(meta))
+    second = tmp_path / "second"
+    assert _run_matcher(store, target, second) == 0
+    first_meta = json.loads((first / "metadata.json").read_text())
+    second_meta = json.loads((second / "metadata.json").read_text())
+    assert first_meta["target_digest"] != second_meta["target_digest"]
+    assert first_meta["seed_identity"] == second_meta["seed_identity"]
+    for name in ("bootstrap_seeds.npy", "positions.npy", "restart_seeds.npy"):
+        assert np.array_equal(np.load(first / name), np.load(second / name)), name
+
+
 def test_bootstrap_bundle_is_consumable_by_phi_sfs(tmp_path):
     """The whole point of the bundle is to be read by the Phi-SFS step.
 

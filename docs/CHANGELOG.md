@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Seeds no longer depend on the target's floating-point outputs. The matcher
+  (algorithm `bootstrap-target-exact-greedy-v2`) derives every bootstrap and
+  restart seed, and Phi-SFS derives the $B_0$ draw, from `target_seed_identity`:
+  a hash of the focal rows and the target's recorded inputs. Rebuilding a target
+  with a different thread count or CPU type no longer changes the matched sets or
+  $B_0$. Bundles record `seed_identity` and `seed_identity_rule`; Phi-SFS checks
+  the identity against the target and records `reference_seed_basis`. Bundles
+  without a seed identity (v0.9.0 and earlier) keep the digest rule. The same
+  seed now gives different sets than matcher v1 did.
+
 ## v0.9.0 — 2026-10-02
 
 Releases rc2's design after the blocking validation in

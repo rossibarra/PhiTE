@@ -20,7 +20,9 @@ from typing import Callable, Sequence
 import numpy as np
 
 from .release_provenance import loaded_source_digest, software_provenance
-from .sample_age_matched_controls import _load_target, _sha256_arrays
+from .sample_age_matched_controls import (
+    TARGET_SEED_IDENTITY_RULE, _load_target, _sha256_arrays, target_seed_identity,
+)
 from .snp_age_store import is_interval_store, open_snp_age_store, store_schema
 from .swap_control_sampler import (
     aggregate_cdf,
@@ -33,7 +35,9 @@ from .te_age_target import wasserstein_1
 
 
 SCHEMA_VERSION = "bootstrap-target-matches-v1"
-ALGORITHM_VERSION = "bootstrap-target-exact-greedy-v1"
+# v2 seeds from the target's inputs (target_seed_identity) rather than its
+# digest, so the same seed gives different sets than v1 did.
+ALGORITHM_VERSION = "bootstrap-target-exact-greedy-v2"
 
 
 @dataclass(frozen=True)
@@ -91,11 +95,11 @@ class RestartResult:
     elapsed_seconds: float = 0.0
 
 
-def derive_seed(global_seed: int, target_digest: str, replicate: int,
+def derive_seed(global_seed: int, seed_identity: str, replicate: int,
                 restart: int | None = None) -> int:
     suffix = "bootstrap" if restart is None else f"restart\0{restart}"
     payload = (
-        f"{global_seed}\0{target_digest}\0{replicate}\0{suffix}"
+        f"{global_seed}\0{seed_identity}\0{replicate}\0{suffix}"
         f"\0{ALGORITHM_VERSION}"
     )
     return int.from_bytes(hashlib.sha256(payload.encode()).digest()[:8], "little")
@@ -893,6 +897,7 @@ def _write_outputs(
     global_seed: int,
     candidate_digest: str | None,
     target_digest: str,
+    seed_identity: str,
     store_dir: Path,
     elapsed: float,
     eligibility_identity: dict,
@@ -1092,6 +1097,8 @@ def _write_outputs(
             "source_catalog_sha256": getattr(store, "metadata", {}).get("catalog_sha256"),
             "source_store_content_sha256": getattr(store, "metadata", {}).get("content_sha256"),
             "target_digest": target_digest,
+            "seed_identity": seed_identity,
+            "seed_identity_rule": TARGET_SEED_IDENTITY_RULE,
             "candidate_rows_digest": candidate_digest,
             "replicate_identifiers": ["replicate_id"],
             "global_seed": global_seed,
@@ -1172,6 +1179,7 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("bootstrap-target optimization requires an interval store")
     (target_digest, target_rows, observed_target, age_bins,
      acceptance_threshold, target_meta) = target_digest_for(args.target)
+    seed_identity = target_seed_identity(target_rows, target_meta)
     boundary_ages = np.load(
         args.target / "interval_boundary_ages.npy", allow_pickle=False)
     quotas = np.load(args.target / "interval_quotas.npy", allow_pickle=False)
@@ -1279,6 +1287,7 @@ def run(args: argparse.Namespace) -> None:
         "source_digest": loaded_source_digest(),
         "numpy_version": np.__version__,
         "target_digest": target_digest,
+        "seed_identity": seed_identity,
         "source_store_content_sha256": getattr(store, "metadata", {}).get("content_sha256"),
         "candidate_rows_digest": candidate_digest,
         "vcf_eligibility_identity": eligibility_identity,
@@ -1332,7 +1341,7 @@ def run(args: argparse.Namespace) -> None:
                 )
         else:
             replicate_candidates = candidates
-        bootstrap_seed = derive_seed(args.seed, target_digest, replicate)
+        bootstrap_seed = derive_seed(args.seed, seed_identity, replicate)
         bootstrap_seeds[replicate] = bootstrap_seed
         bootstrap_rng = np.random.default_rng(bootstrap_seed)
         counts[replicate] = bootstrap_counts(target_rows.size, bootstrap_rng)
@@ -1364,7 +1373,7 @@ def run(args: argparse.Namespace) -> None:
         else:
             for restart in range(config.restarts):
                 restart_seed = derive_seed(
-                    args.seed, target_digest, replicate, restart
+                    args.seed, seed_identity, replicate, restart
                 )
                 # Every restart is an independent stratified draw from this
                 # replicate's own candidate universe, which in disjoint mode
@@ -1408,7 +1417,7 @@ def run(args: argparse.Namespace) -> None:
                 observed_target=observed_target,
                 age_bins=age_bins,
                 expected_seed=derive_seed(
-                    args.seed, target_digest, replicate, restart
+                    args.seed, seed_identity, replicate, restart
                 ),
             )
         if not resumed_bundle:
@@ -1452,6 +1461,7 @@ def run(args: argparse.Namespace) -> None:
         global_seed=args.seed,
         candidate_digest=candidate_digest,
         target_digest=target_digest,
+        seed_identity=seed_identity,
         store_dir=getattr(store, "store_dir", args.store),
         elapsed=time.perf_counter() - started,
         eligibility_identity=eligibility_identity,

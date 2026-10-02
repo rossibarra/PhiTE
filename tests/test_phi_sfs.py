@@ -26,7 +26,10 @@ from normalize_tes.phi_sfs import (
     project_sites,
     project_sites_bernoulli_q,
 )
-from normalize_tes.sample_age_matched_controls import _sha256_arrays
+from normalize_tes.bootstrap_target_matcher import target_digest_for
+from normalize_tes.sample_age_matched_controls import (
+    TARGET_SEED_IDENTITY_RULE, _load_target, _sha256_arrays, target_seed_identity,
+)
 
 
 # ---------------------------------------------------------------- projection
@@ -1112,6 +1115,84 @@ def test_a_drawn_b0_never_fails_qc(tmp_path):
             "--reference-seed", str(seed), reference=None,
         ) == 0
         assert np.load(output / "reference_replicate_id.npy").item() in (1, 2, 3)
+
+
+def _mark_seed_identity(target, matches, identity=None):
+    """Record the seed identity a v2 matcher writes into its bundle."""
+    rows, _, _, _, meta = _load_target(target)
+    match_meta = json.loads((matches / "metadata.json").read_text())
+    match_meta["seed_identity_rule"] = TARGET_SEED_IDENTITY_RULE
+    match_meta["seed_identity"] = (
+        identity if identity is not None else target_seed_identity(rows, meta)
+    )
+    (matches / "metadata.json").write_text(json.dumps(match_meta))
+
+
+def _nudge_threshold(target, matches, delta):
+    """Shift the threshold in its last digits, as another CPU or thread count
+    does, and re-record the target digest so provenance still holds."""
+    meta = json.loads((target / "metadata.json").read_text())
+    meta["wasserstein_threshold_generations"] += delta
+    (target / "metadata.json").write_text(json.dumps(meta))
+    match_meta = json.loads((matches / "metadata.json").read_text())
+    match_meta["target_digest"] = target_digest_for(target)[0]
+    (matches / "metadata.json").write_text(json.dumps(match_meta))
+
+
+def _drawn_b0s(tmp_path, target, matches, vcf, table, tag):
+    drawn = []
+    for seed in range(8):
+        output = tmp_path / f"phi-{tag}-{seed}"
+        assert _run(
+            target, matches, vcf, output, "--ancestral-table", str(table),
+            "--reference-seed", str(seed), reference=None,
+        ) == 0
+        drawn.append(np.load(output / "reference_replicate_id.npy").item())
+    return drawn
+
+
+def test_seed_identity_ignores_the_threshold_but_not_the_sites(tmp_path):
+    target, _, _, _ = _spare_set_bundle(tmp_path)
+    rows, _, _, _, meta = _load_target(target)
+    identity = target_seed_identity(rows, meta)
+    meta["wasserstein_threshold_generations"] += 1e-6
+    assert target_seed_identity(rows, meta) == identity
+    assert target_seed_identity(rows[::-1], meta) != identity
+    assert target_seed_identity(rows, {**meta, "seed": 7}) != identity
+
+
+def test_v2_bundle_b0_survives_a_last_digit_target_change(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    # _run fills in the fixture's real VCF digest, which is one of the target
+    # inputs, so record the identity only after that.
+    _sync_vcf_identity(target, matches, vcf)
+    _mark_seed_identity(target, matches)
+    before = _drawn_b0s(tmp_path, target, matches, vcf, table, "before")
+    _nudge_threshold(target, matches, 1e-6)
+    after = _drawn_b0s(tmp_path, target, matches, vcf, table, "after")
+    assert before == after
+    metadata = json.loads((tmp_path / "phi-after-0" / "metadata.json").read_text())
+    assert metadata["reference_seed_basis"] == "target seed identity"
+
+
+def test_legacy_bundle_keeps_the_digest_rule(tmp_path):
+    """Without a seed identity B0 still follows the digest, so v0.9.0 results
+    reproduce; the same last-digit change then moves B0 for some seed."""
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    before = _drawn_b0s(tmp_path, target, matches, vcf, table, "before")
+    _nudge_threshold(target, matches, 1e-6)
+    after = _drawn_b0s(tmp_path, target, matches, vcf, table, "after")
+    assert before != after
+    metadata = json.loads((tmp_path / "phi-after-0" / "metadata.json").read_text())
+    assert metadata["reference_seed_basis"] == "target_digest (legacy bundle)"
+
+
+def test_v2_bundle_with_a_foreign_seed_identity_is_refused(tmp_path):
+    target, matches, vcf, table = _spare_set_bundle(tmp_path)
+    _mark_seed_identity(target, matches, identity="0" * 64)
+    with pytest.raises(ValueError, match="seed_identity"):
+        _run(target, matches, vcf, tmp_path / "phi", "--ancestral-table",
+             str(table), reference=None)
 
 
 def _sensitivity_bundle(tmp_path):
