@@ -48,6 +48,7 @@
 #   REFERENCE_SEED   seed for the B0 draw, with the target digest   (1002)
 #   MIN_NULL_REPLICATES  floor on R, the number of QC-passing nulls    (900)
 #   MAX_NULL_REPLICATES  fix R at exactly N nulls from the seeded order  (unset)
+#   REFERENCE_SENSITIVITY  rerun calibration with N alternative B0s        (0)
 #   ASYMMETRIC_POLARITY_NULL  true for Bernoulli-q left vs mixture B0 (false)
 #   POLARITY_IMPUTATION_SEED  coordinate-keyed Bernoulli-q seed         (2001)
 #   HETEROZYGOUS  error|missing for diploid calls                 (error)
@@ -73,6 +74,7 @@ REFERENCE_REPLICATE="${REFERENCE_REPLICATE:-}"
 REFERENCE_SEED="${REFERENCE_SEED:-1002}"
 MIN_NULL_REPLICATES="${MIN_NULL_REPLICATES:-900}"
 MAX_NULL_REPLICATES="${MAX_NULL_REPLICATES:-}"
+REFERENCE_SENSITIVITY="${REFERENCE_SENSITIVITY:-0}"
 ASYMMETRIC_POLARITY_NULL="${ASYMMETRIC_POLARITY_NULL:-false}"
 POLARITY_IMPUTATION_SEED="${POLARITY_IMPUTATION_SEED:-2001}"
 reference_option=()
@@ -86,6 +88,10 @@ if [[ -n "$MAX_NULL_REPLICATES" ]]; then
         exit 1
     fi
     null_cap_option=(--max-null-replicates "$MAX_NULL_REPLICATES")
+fi
+if [[ ! "$REFERENCE_SENSITIVITY" =~ ^[0-9]+$ ]]; then
+    echo "REFERENCE_SENSITIVITY must be a non-negative integer" >&2
+    exit 1
 fi
 case "$ASYMMETRIC_POLARITY_NULL" in
     true)
@@ -136,6 +142,7 @@ python -m normalize_tes.phi_sfs \
     "${reference_option[@]}" \
     "${null_cap_option[@]}" \
     --reference-seed "$REFERENCE_SEED" \
+    --reference-sensitivity "$REFERENCE_SENSITIVITY" \
     --min-null-replicates "$MIN_NULL_REPLICATES" \
     --heterozygous "$HETEROZYGOUS"
 date
