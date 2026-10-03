@@ -123,7 +123,7 @@ sampling floor is calibrated separately for every focal category rather than
 comparing raw Phi-SFS values across categories.
 
 1. Apply matching QC. Draw $B_0$ uniformly from the QC-passing sets, with a seed
-   derived from `--reference-seed` and the target digest. Every other QC-passing
+   derived from `--reference-seed` and the target's seed identity (below). Every other QC-passing
    set is a null, so $R$ is whatever passes QC; production requires $R\ge450$.
 2. $\Phi_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A,B_0)$.
 3. $\Phi_i^0=\Phi_{\mathrm{SFS}}(B_i,B_0)$ for $i=1,\ldots,R$. Each $\Phi_i^0$ is
@@ -146,6 +146,14 @@ The add-one P-value is valid for any $R$. With $R\approx500$ the smallest
 attainable value is about $2\times10^{-3}$.
 
 $B_0$ is drawn before any SFS is examined, so the choice of reference is SFS-blind.
+Its seed, and every bootstrap and restart seed in the matcher, comes from the
+target's **seed identity**: a hash of the focal sites and the target's recorded
+inputs (store, eligibility artifact, A type, bin width, bootstrap seed and
+settings). It deliberately leaves out the target's floating-point outputs, whose
+last digits depend on the thread count and CPU type, so rebuilding a target on
+other hardware gives the same sets and the same $B_0$. Bundles from v0.9.0 and
+earlier record no seed identity; for them Phi-SFS keeps the earlier rule, which
+seeds from the target digest, so their published results still reproduce.
 Replicate 0 is not the default reference, because it is matched first, from the
 undepleted pool, and so is not a typical set. `--reference-sensitivity N` repeats
 the calibration with the next $N$ sets of the same seeded permutation as $B_0$,

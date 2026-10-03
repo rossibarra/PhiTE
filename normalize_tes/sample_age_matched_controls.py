@@ -42,6 +42,38 @@ def _sha256_arrays(*arrays: np.ndarray) -> str:
     return digest.hexdigest()
 
 
+TARGET_SEED_IDENTITY_RULE = "target-inputs-v1"
+_TARGET_SEED_METADATA_KEYS = (
+    "a_type", "source_store_content_sha256", "source_catalog_sha256",
+    "bin_width", "seed", "bootstrap_replicates", "acceptance_quantile",
+    "missing_position_policy",
+)
+
+
+def target_seed_identity(rows: np.ndarray, metadata: dict) -> str:
+    """Hash a target's inputs, not its floating-point outputs, for seeding.
+
+    The target digest covers the acceptance threshold, which comes from the
+    bootstrap distances, and those differ in their last digits with the thread
+    count and CPU type. Seeding from the digest therefore let a rebuild of the
+    same target on other hardware draw different matched sets and a different
+    B0. This identity uses only the focal rows and the recorded inputs that
+    determine them and their ages, so it is the same wherever the target is
+    built. The digest still binds a bundle to the exact target it used.
+    """
+    eligibility = metadata.get("vcf_eligibility")
+    record = {key: metadata.get(key) for key in _TARGET_SEED_METADATA_KEYS}
+    record["vcf_eligibility_identity"] = (
+        eligibility.get("identity") if isinstance(eligibility, dict) else None
+    )
+    digest = hashlib.sha256()
+    digest.update(f"{TARGET_SEED_IDENTITY_RULE}\0".encode())
+    digest.update(json.dumps(record, sort_keys=True, separators=(",", ":")).encode())
+    digest.update(b"\0")
+    digest.update(_sha256_arrays(np.asarray(rows, dtype=np.int64)).encode())
+    return digest.hexdigest()
+
+
 def _load_target(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, dict]:
     metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
     rows = np.load(path / "te_row_indices.npy", allow_pickle=False)

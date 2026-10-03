@@ -46,7 +46,9 @@ import numpy as np
 from .build_ancestral_states import SCHEMA_VERSION as ANCESTRAL_SCHEMA_VERSION
 from .build_ancestral_states import verify_table_arrays
 from .release_provenance import software_provenance
-from .sample_age_matched_controls import _load_target, _sha256_arrays
+from .sample_age_matched_controls import (
+    TARGET_SEED_IDENTITY_RULE, _load_target, _sha256_arrays, target_seed_identity,
+)
 from .vcf_io import (  # noqa: F401 -- re-exported for existing callers
     COMPRESSED_SUFFIXES,
     _HashingStream,
@@ -875,9 +877,25 @@ def calculate(args: argparse.Namespace) -> None:
     # sets exchangeable (CODE_REVIEW_ROUND12.md, finding 7).
     # The same permutation supplies the alternative references for
     # reference sensitivity, so they are prespecified in the same way.
-    reference_seed = int.from_bytes(hashlib.sha256(
-        f"phi-sfs-reference:{args.reference_seed}:{target_digest}".encode()
-    ).digest()[:8], "little")
+    # A bundle that records a seed identity (matcher v2) is drawn from it, so
+    # rebuilding the target on other hardware, which changes the digest in its
+    # last bits, cannot change B0. Older bundles keep the digest rule, so their
+    # published results still reproduce from the published target.
+    if match_meta.get("seed_identity_rule") == TARGET_SEED_IDENTITY_RULE:
+        target_rows_for_seed, _, _, _, _ = _load_target(args.target)
+        seed_identity = target_seed_identity(target_rows_for_seed, target_meta)
+        if match_meta.get("seed_identity") != seed_identity:
+            raise ValueError(
+                "matched-control seed_identity does not match the target's inputs"
+            )
+        reference_basis = "target seed identity"
+        reference_payload = f"phi-sfs-reference-v2:{args.reference_seed}:{seed_identity}"
+    else:
+        reference_basis = "target_digest (legacy bundle)"
+        reference_payload = f"phi-sfs-reference:{args.reference_seed}:{target_digest}"
+    reference_seed = int.from_bytes(
+        hashlib.sha256(reference_payload.encode()).digest()[:8], "little"
+    )
     order = passing[np.random.default_rng(reference_seed).permutation(passing.size)]
     if args.reference_replicate is None:
         if order.size == 0:
@@ -885,7 +903,7 @@ def calculate(args: argparse.Namespace) -> None:
         reference_source_index = int(order[0])
         reference_rule = (
             f"uniform draw from QC-passing sets, seed from --reference-seed "
-            f"{args.reference_seed} and target_digest"
+            f"{args.reference_seed} and {reference_basis}"
         )
     else:
         reference_hits = np.flatnonzero(replicate_ids == args.reference_replicate)
@@ -1533,6 +1551,7 @@ def calculate(args: argparse.Namespace) -> None:
             ),
             "reference_selection_rule": reference_rule + ", chosen before the SFS scan",
             "reference_seed": args.reference_seed,
+            "reference_seed_basis": reference_basis,
             "reference_replicate_id": reference_id,
             "reference_index_in_b_arrays": reference_index,
             "reference_bootstrap_seed": int(bootstrap_seeds[reference_source]),

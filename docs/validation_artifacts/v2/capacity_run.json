@@ -1,0 +1,13 @@
+{
+  "reference_tests": "results/sim_dnaging/all_mixture_depletion_v1/tests.csv",
+  "reproduced_reference": true,
+  "largest_tested_M_with_95pct_tests_ge_19_nulls": {
+    "mixture_inferred_depleted": 250,
+    "mixture_true_depleted": 250
+  },
+  "tested_sizes": [
+    250,
+    1000,
+    4000
+  ]
+}

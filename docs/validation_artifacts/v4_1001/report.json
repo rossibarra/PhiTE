@@ -1,0 +1,144 @@
+{
+  "matches": "results/bootstrap_matches/in_gene_rc2",
+  "phi": "results/phi_sfs/in_gene_rc2",
+  "criteria": [
+    {
+      "criterion": "maximum control reuse",
+      "value": 1,
+      "threshold": "== 1",
+      "pass": true
+    },
+    {
+      "criterion": "sets containing a duplicate control",
+      "value": 0,
+      "threshold": "== 0",
+      "pass": true
+    },
+    {
+      "criterion": "QC-passing sets",
+      "value": 996,
+      "threshold": ">= 901",
+      "pass": true
+    },
+    {
+      "criterion": "fewest QC passes in a complete block of 100",
+      "value": 95,
+      "threshold": ">= 80",
+      "pass": true
+    },
+    {
+      "criterion": "QC pass-rate fall, first to last block (points)",
+      "value": 5.0,
+      "threshold": "<= 10",
+      "pass": true
+    },
+    {
+      "criterion": "SFS distance to pooled spectrum: |rho| with replicate ID",
+      "value": 0.164,
+      "threshold": "|rho| < 0.1",
+      "pass": false
+    },
+    {
+      "criterion": "SFS distance to pooled spectrum: early-vs-late |SMD|",
+      "value": 0.4756,
+      "threshold": "|SMD| < 0.2",
+      "pass": false
+    }
+  ],
+  "blocks": [
+    {
+      "block": 0,
+      "first_replicate": 0,
+      "last_replicate": 99,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 53.146894890803324,
+      "median_matching_error_ratio": 0.032316015862756314
+    },
+    {
+      "block": 1,
+      "first_replicate": 100,
+      "last_replicate": 199,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 53.2864434151214,
+      "median_matching_error_ratio": 0.032404342520495386
+    },
+    {
+      "block": 2,
+      "first_replicate": 200,
+      "last_replicate": 299,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 54.1199910076758,
+      "median_matching_error_ratio": 0.03385379983801404
+    },
+    {
+      "block": 3,
+      "first_replicate": 300,
+      "last_replicate": 399,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 50.30286204347554,
+      "median_matching_error_ratio": 0.02975682108172148
+    },
+    {
+      "block": 4,
+      "first_replicate": 400,
+      "last_replicate": 499,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 52.857677244247654,
+      "median_matching_error_ratio": 0.03307001493377108
+    },
+    {
+      "block": 5,
+      "first_replicate": 500,
+      "last_replicate": 599,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 51.3284006308649,
+      "median_matching_error_ratio": 0.037216977400213666
+    },
+    {
+      "block": 6,
+      "first_replicate": 600,
+      "last_replicate": 699,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 49.772719834364295,
+      "median_matching_error_ratio": 0.03563947826865725
+    },
+    {
+      "block": 7,
+      "first_replicate": 700,
+      "last_replicate": 799,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 85.361026946211,
+      "median_matching_error_ratio": 0.05800574847324524
+    },
+    {
+      "block": 8,
+      "first_replicate": 800,
+      "last_replicate": 899,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 185.22136524023898,
+      "median_matching_error_ratio": 0.1460394234359949
+    },
+    {
+      "block": 9,
+      "first_replicate": 900,
+      "last_replicate": 999,
+      "qc_passes": 95,
+      "median_match_to_bootstrap_w1": 320.3945000561328,
+      "median_matching_error_ratio": 0.19998223825966477
+    }
+  ],
+  "diagnostics": {
+    "rho_match_to_bootstrap_w1": 0.593203335586569,
+    "rho_matching_error_ratio": 0.5728887878588477,
+    "median_w1_shift_first_to_last_block": 267.2476051653295,
+    "median_error_ratio_shift_first_to_last_block": 0.16766622239690845,
+    "metadata_qc_passes": 996,
+    "metadata_maximum_control_reuse": 1,
+    "replicates": 1001,
+    "set_size": 4067,
+    "published_sets": 996,
+    "quarter_size": 249,
+    "early_mean_distance": 0.0037312097790743394,
+    "late_mean_distance": 0.004728165425527636
+  }
+}

@@ -6,6 +6,8 @@ two amendments made after results were seen, are in
 [REMAINING_VALIDATION_PROPOSAL.md](REMAINING_VALIDATION_PROPOSAL.md) (items V1–V11).
 Production settings and measured resources are in
 [BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md).
+Compact, version-controlled copies of the reports cited below are indexed in
+[validation_artifacts/README.md](validation_artifacts/README.md).
 
 ## Status for v0.9.0
 
@@ -73,7 +75,9 @@ all-mixture arms, with equal replicate weights:
 The criterion was a rate of at most 0.075 and an upper bound (replicate bootstrap)
 of at most 0.10 in every cell. The depleted arms could not reach 19 nulls at
 $M=4000$ in any replicate, as the V2 capacity report predicted, so those four
-cells are untested. Report: `results/v1_report`.
+cells are untested. Report: [validation_artifacts/v1](validation_artifacts/v1/).
+The V2 capacity summaries are in
+[validation_artifacts/v2](validation_artifacts/v2/).
 
 To reproduce, on a compute node (each condition took about 40 minutes; the
 simulator is not checkpointed, so a preempted job must be restarted with a new
@@ -112,15 +116,17 @@ on the global seed, target, replicate and restart, and depletion is sequential, 
 these are the sets a 500-set run produces. On those sets drift passes
 ($\rho=0.027$, $\mathrm{SMD}=0.014$), all 500 pass QC, and maximum reuse is 1. This
 change was made after the result was seen; the 1,001-set failure stays on record.
-Reports: `results/v4/in_gene_rc2` (1,001 sets) and
-`results/v4/in_gene_rc2_first500`.
+Reports: [validation_artifacts/v4_1001](validation_artifacts/v4_1001/) (1,001
+sets) and [validation_artifacts/v4_first500](validation_artifacts/v4_first500/).
+The latter was regenerated with Amendment A's `--min-qc-passes 451`; all seven
+recorded criteria pass.
 
 **V5** ran Phi-SFS on the 500 sets: $R=499$, every set passes QC, reuse 1, no
 overlap with $B_0$, $M$ identical across A and every set, finite null mean and
 nonzero SD, a recomputed add-one P-value that agrees with the output, and matching
 input digests. Reference sensitivity with 10 alternative references gave Z from
 9.3 to 15.8; every P-value was at its floor of 0.002. Output:
-`results/phi_sfs/in_gene_rc2_first500`.
+[validation_artifacts/v5](validation_artifacts/v5/).
 
 ## Real-data negative control (V6)
 
@@ -140,8 +146,8 @@ sets with 3 restarts and its own seed, and ran Phi-SFS with exactly $R=99$ nulls
   4,000 sites.
 
 The result is conditional on this genome, this candidate pool, and $M=4{,}000$,
-and uses SNP focal sets only. Report: `results/v6_report`, from
-`tools/v6_report.py`.
+and uses SNP focal sets only. Report:
+[validation_artifacts/v6](validation_artifacts/v6/), from `tools/v6_report.py`.
 
 **Earlier pilot (superseded).** 100 held-out real SNP sets, Bernoulli-$q$ focal
 sets against a mixture reference with 344 Bernoulli-$q$ nulls, rejected 7 of 100
@@ -177,5 +183,8 @@ were rerun on a clean checkout with the same seeds (`results/v6_clean_rerun`):
 **Known limitation.** Because $B_0$ is seeded from a digest of floating-point
 target arrays, rebuilding a target with a different thread count or CPU type can
 select a different $B_0$ and change P. Rerunning Phi-SFS on a published target
-and bundle draws the same $B_0$, because the seed then comes from the same digest. The fix, seeding $B_0$ from the target's inputs instead, is planned
-for the next release.
+and bundle draws the same $B_0$, because the seed then comes from the same digest.
+Fixed after v0.9.0: matcher v2 and Phi-SFS now seed from the target's inputs
+(see [METHODS.md](METHODS.md#null-calibration)). The four mismatched targets above
+all give the same seed identity on every build, including the 6-thread build of
+test 279. v0.9.0 bundles keep the old rule.

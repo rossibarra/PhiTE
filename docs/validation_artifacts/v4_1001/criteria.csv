@@ -1,0 +1,8 @@
+criterion,value,threshold,pass
+maximum control reuse,1,== 1,True
+sets containing a duplicate control,0,== 0,True
+QC-passing sets,996,>= 901,True
+fewest QC passes in a complete block of 100,95,>= 80,True
+"QC pass-rate fall, first to last block (points)",5.0,<= 10,True
+SFS distance to pooled spectrum: |rho| with replicate ID,0.164,|rho| < 0.1,False
+SFS distance to pooled spectrum: early-vs-late |SMD|,0.4756,|SMD| < 0.2,False
