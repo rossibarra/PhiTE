@@ -1,5 +1,7 @@
 # PhiTE v0.9.0
 
+![Graphical abstract of the PhiTE pipeline: posterior ARGs give each site an age and polarity, SNP control sets are matched to the focal set's ages, spectra are compared with Phi-SFS, and null sets calibrate the sampling floor](figures/phite_graphical_abstract.png)
+
 PhiTE asks whether a focal set of variants, usually a category of transposable
 elements (TEs), has a different site-frequency spectrum (SFS) from neutral SNPs of
 the same age. It builds SNP control sets matched to the focal set's posterior ages
