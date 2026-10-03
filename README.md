@@ -63,12 +63,14 @@ ANCESTRAL=results/ancestral_states     # 2: P(ALT is derived) for every site
 VCF_ELIGIBILITY=results/vcf_eligibility  # 3: sites callable in the VCF and orientable by the ARGs
 CANDIDATES=results/candidate_rows.npy  # 4: SNPs eligible as controls
 
-# Per-category outputs (steps 5-6)
+# Per-category outputs (steps 5-6 and verification)
 TARGET=results/targets/in_gene         # 5: A's posterior ages, the target controls are matched to
 MATCHES=results/bootstrap_matches/in_gene  # 5: the 500 age-matched SNP control sets
 WORK_DIR=results/work/in_gene          # 5: matcher checkpoints, so a preempted run can resume
 PHI=results/phi_sfs/in_gene            # 6: Phi-SFS, null calibration and summary.csv
-mkdir -p results/targets results/bootstrap_matches results/work results/phi_sfs
+VERIFY=results/verification/in_gene    # acceptance report for this category
+mkdir -p results/targets results/bootstrap_matches results/work results/phi_sfs \
+  results/verification
 ```
 
 Every output path must be new; no tool overwrites an existing result. Run every
@@ -221,27 +223,27 @@ See [docs/METHODS.md](docs/METHODS.md) for definitions and caveats.
 
 ## Verify a run
 
-Before using a result:
+Run the acceptance checks before using a result:
 
-1. Every `metadata.json` records the expected release, commit and input identities.
-2. The candidate report meets `--min-resolved-fraction` and names the intended
-   store and eligibility artifact.
-3. The target records the intended `a_type` and no `te_polarity` mask.
-4. The bundle has 500 sets in disjoint mode, maximum control reuse 1, and the sets
-   used by Phi-SFS all pass matching QC.
-5. The Phi-SFS result records
-   `null_polarity_design=posterior-mixture-vs-posterior-mixture` and equal $M$ for
-   A and every set.
-6. **The matched sets do not drift with matching order.** Validation covers 500
-   sets at $M\approx4{,}000$ only, and a larger category depletes the control pool
-   faster. Do not use a category's result until this passes:
+```bash
+python -m normalize_tes.verify_run \
+  --candidate-rows "$CANDIDATES" --target "$TARGET" \
+  --matches "$MATCHES" --phi "$PHI" -A "$A_TYPE" \
+  --output "$VERIFY"
+```
 
-   ```bash
-   python -m tools.v4_depletion_report --matches "$MATCHES" --phi "$PHI" \
-     --min-qc-passes 451 --output results/drift/in_gene
-   ```
+The verifier authenticates the candidate, target, matched bundle and Phi-SFS
+provenance; requires the current checkout's release and commit; checks the
+production settings (500 disjoint sets, at least 451 QC passes, no control
+reuse, posterior-mixture polarity and equal $M$); and tests matching-order drift.
+It writes `criteria.csv`, `blocks.csv` and `report.json`, and exits nonzero if
+any criterion fails. Every row of `criteria.csv` must read `True`.
 
-   Every row of `criteria.csv` must read `True`.
+By default, the expected commit is the verifier's current checkout. Use
+`--expected-commit COMMIT` only when intentionally verifying artifacts from a
+different fixed commit. The automated checks cannot decide whether
+`A_POSITIONS`, the VCF and the control-position lists are the scientifically
+intended inputs; confirm those choices separately.
 
 ## Outputs
 
@@ -254,6 +256,7 @@ Before using a result:
 | `targets/CATEGORY/` | focal age target and acceptance threshold |
 | `bootstrap_matches/CATEGORY/` | the 500 disjoint control sets, QC and reuse checks |
 | `phi_sfs/CATEGORY/` | spectra, CDFs, distances, null Z-scores, `summary.csv`, provenance |
+| `verification/CATEGORY/` | pass/fail criteria, block summaries and verification provenance |
 
 ## Repository and further documents
 
