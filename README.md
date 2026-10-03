@@ -48,22 +48,26 @@ Run production analyses from a release tag or fixed commit (`git checkout TAG`).
 ## Configure
 
 ```bash
-POSTERIOR_DIR=/path/posterior          # *.tsz ARG draws
-CHROM_OFFSETS=/path/chrom_offsets.txt
-SNP_POSITIONS=/path/snp/all_snp.pos.txt
-ALL_TE_POSITIONS=/path/te/all_te.pos.txt
-A_POSITIONS=/path/te/in_gene.pos.txt   # the focal category
-A_TYPE=TE                              # SNP for a negative control
-VCF=/path/variants.vcf.gz
+# Inputs
+POSTERIOR_DIR=/path/posterior          # directory of posterior ARG draws (*.tsz)
+CHROM_OFFSETS=/path/chrom_offsets.txt  # chromosome start offsets in the ARGs' global coordinates
+SNP_POSITIONS=/path/snp/all_snp.pos.txt   # every filtered SNP: the pool controls come from
+ALL_TE_POSITIONS=/path/te/all_te.pos.txt  # every TE, all categories: never used as controls
+A_POSITIONS=/path/te/in_gene.pos.txt   # the focal set A for this run (one TE category)
+A_TYPE=TE                              # type of A: TE, or SNP for a negative control
+VCF=/path/variants.vcf.gz              # filtered, biallelic VCF; TEs coded as ACGT sites
 
-STORE=results/age_interval_store
-ANCESTRAL=results/ancestral_states
-VCF_ELIGIBILITY=results/vcf_eligibility
-CANDIDATES=results/candidate_rows.npy
-TARGET=results/targets/in_gene
-MATCHES=results/bootstrap_matches/in_gene
-WORK_DIR=results/work/in_gene
-PHI=results/phi_sfs/in_gene
+# Shared outputs (steps 1-4)
+STORE=results/age_interval_store       # 1: posterior age intervals for every site
+ANCESTRAL=results/ancestral_states     # 2: P(ALT is derived) for every site
+VCF_ELIGIBILITY=results/vcf_eligibility  # 3: sites callable in the VCF and orientable by the ARGs
+CANDIDATES=results/candidate_rows.npy  # 4: SNPs eligible as controls
+
+# Per-category outputs (steps 5-6)
+TARGET=results/targets/in_gene         # 5: A's posterior ages, the target controls are matched to
+MATCHES=results/bootstrap_matches/in_gene  # 5: the 500 age-matched SNP control sets
+WORK_DIR=results/work/in_gene          # 5: matcher checkpoints, so a preempted run can resume
+PHI=results/phi_sfs/in_gene            # 6: Phi-SFS, null calibration and summary.csv
 mkdir -p results/targets results/bootstrap_matches results/work results/phi_sfs
 ```
 
@@ -72,7 +76,8 @@ step on a compute node, not a login node.
 
 ## Run
 
-Steps 1–4 are built once and shared by all categories. Steps 5–6 run per category.
+Steps 1–4 are built once and shared by all TE categories (a SNP negative control
+rebuilds step 4). Steps 5–6 run per category.
 
 **1. Interval store**: posterior age intervals for every SNP and TE.
 
@@ -97,7 +102,9 @@ python -m normalize_tes.vcf_eligibility \
   --output "$VCF_ELIGIBILITY"
 ```
 
-**4. Candidate controls**: filtered SNPs, with every TE and every A site removed.
+**4. Candidate controls**: filtered SNPs, minus every TE (all categories) and the
+focal set A. Every TE category gets the same file, because its A is already among
+the TEs; a SNP negative control needs its own, built with its `A_POSITIONS`.
 
 ```bash
 python -m normalize_tes.build_candidate_rows \
@@ -136,10 +143,12 @@ python -m normalize_tes.phi_sfs \
 
 The defaults publish 500 sets and require at least 450 QC-passing nulls.
 
-### On Farm
+### On HPC with Slurm
 
 The launchers activate the conda environment and carry the production settings.
-Submit them from the repository root:
+They are set up for UC Davis Farm (`--account=jrigrp`, partitions `high` and
+`low`, `module load conda`); on another cluster, edit those lines first. Submit
+them from the repository root:
 
 ```bash
 # step 2 as an array of 15 parts, then a merge
@@ -232,7 +241,7 @@ Before using a result:
 ## Repository and further documents
 
 - `normalize_tes/`: the production package (`python -m normalize_tes.COMMAND`).
-- `slurm/`: Farm launchers. `tools/`: diagnostics, simulations and validation
+- `slurm/`: Slurm launchers (set up for Farm). `tools/`: diagnostics, simulations and validation
   reports. `tests/`: the test suite.
 - [docs/BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md): historical
   matcher validation, measured resources and acceptance criteria at the tested
