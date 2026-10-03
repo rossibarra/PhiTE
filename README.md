@@ -178,10 +178,10 @@ target, bundle, work directory and seed.
 
 - **effect size**, in DAF units:
 
-  $$
+  ```math
   \hat\Phi_{\mathrm{SFS}}
-  =\sqrt{\max\!\left(\Phi_{\mathrm{obs}}^2-\mu_0^2,0\right)}.
-  $$
+  =\sqrt{\max\left(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0\right)}.
+  ```
 
   It is computed from
   `observed_phi_sfs` ($\Phi_{\mathrm{obs}}$) and `null_mean` ($\mu_0$). Raw
