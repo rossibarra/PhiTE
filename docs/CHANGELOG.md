@@ -1,7 +1,18 @@
 # Changelog
 
-## Unreleased
+## v0.9.1 — 2026-10-02
 
+Backward-compatible update to v0.9.0: deterministic seeds, an automated run
+verifier, launchers for every step, and a corrected effect-size recommendation.
+
+- `normalize_tes.verify_run` checks a published Phi-SFS run against the
+  production acceptance gates (see the README's "Verify a run").
+- Slurm launchers for steps 1, 3 and 4 (`run_interval_store.sbatch`,
+  `run_vcf_eligibility.sbatch`, `run_candidate_rows.sbatch`), so every step can
+  be submitted with `sbatch`; the README comments each configure variable and
+  explains when the candidate pool must be rebuilt.
+- A graphical abstract of the pipeline at the top of the README
+  (`figures/make_graphical_abstract.R`).
 - Clarify and standardize mathematical notation across the README and linked
   method documents, fix the rendered effect-size formula, and remove stale
   instructions from the to-do list.
