@@ -176,6 +176,9 @@ lists every variable with its default. The main ones:
 
 | launcher | variables (default) |
 |---|---|
+| `run_interval_store.sbatch` | `TREES` (quoted glob), `OUTPUT` (required); `CHROM_OFFSETS` (unset); `MIN_USABLE_FRACTION` (0.1) |
+| `run_vcf_eligibility.sbatch` | `VCF`, `STORE`, `ANCESTRAL`, `OUTPUT` (required); `MIN_CALLABLE` (20); `HETEROZYGOUS` (error) |
+| `run_candidate_rows.sbatch` | `STORE`, `SNP_POSITIONS`, `ALL_TE_POSITIONS`, `VCF_ELIGIBILITY`, `OUTPUT` (required); `A_POSITIONS` (unset); `MIN_RESOLVED_FRACTION` (0.70) |
 | `run_bootstrap_matching.sbatch` | `STORE`, `TARGET`, `OUTPUT`, `CANDIDATE_ROWS`, `VCF_ELIGIBILITY` (required); `A_POSITIONS` (builds a missing target); `A_TYPE` (TE); `WORK_DIR` (`OUTPUT.work`); `REPLICATES` (500); `RESTARTS` (3); `SEED` (1002); `INIT_MODE` (median); `ACCEPTANCE_QUANTILE` (0.50); `MISSING_POSITION_POLICY` (error); `SCRATCH_HEADROOM_GB` (32) |
 | `run_phi_sfs.sbatch` | `TARGET`, `MATCHES`, `VCF`, `ANCESTRAL`, `OUTPUT` (required); `A_TYPE` (TE); `B_TYPE` (SNP); `REFERENCE_SEED` (1002); `MIN_NULL_REPLICATES` (450); `MAX_NULL_REPLICATES` (unset); `REFERENCE_SENSITIVITY` (0); `ASYMMETRIC_POLARITY_NULL` (false); `POLARITY_IMPUTATION_SEED` (2001); `HETEROZYGOUS` (error) |
 | `run_ancestral_table.sbatch` | `STORE`, `TREES`, `OUTPUT`, `PER_TASK` for array parts; `MERGE=1`, `PARTS`, `EXPECT_DRAWS` for the merge |

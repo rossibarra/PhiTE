@@ -151,11 +151,24 @@ They are set up for UC Davis Farm (`--account=jrigrp`, partitions `high` and
 them from the repository root:
 
 ```bash
+# step 1 (1 CPU, 64 GB, up to 8 h; uses node-local $TMPDIR)
+sbatch --export=ALL,TREES="$POSTERIOR_DIR/*.tsz",CHROM_OFFSETS="$CHROM_OFFSETS",\
+OUTPUT="$STORE" slurm/run_interval_store.sbatch
+
 # step 2 as an array of 15 parts, then a merge
 sbatch --array=0-14 --export=ALL,STORE="$STORE",TREES="$POSTERIOR_DIR/*.tsz",\
 OUTPUT=results/ancestral-parts,PER_TASK=5 slurm/run_ancestral_table.sbatch
 sbatch --export=ALL,STORE="$STORE",MERGE=1,PARTS="results/ancestral-parts/part-*",\
 OUTPUT="$ANCESTRAL",EXPECT_DRAWS=75 slurm/run_ancestral_table.sbatch
+
+# step 3
+sbatch --export=ALL,VCF="$VCF",STORE="$STORE",ANCESTRAL="$ANCESTRAL",\
+OUTPUT="$VCF_ELIGIBILITY" slurm/run_vcf_eligibility.sbatch
+
+# step 4
+sbatch --export=ALL,STORE="$STORE",SNP_POSITIONS="$SNP_POSITIONS",\
+ALL_TE_POSITIONS="$ALL_TE_POSITIONS",A_POSITIONS="$A_POSITIONS",\
+VCF_ELIGIBILITY="$VCF_ELIGIBILITY",OUTPUT="$CANDIDATES" slurm/run_candidate_rows.sbatch
 
 # step 5 (builds the target if it does not exist)
 sbatch --export=ALL,STORE="$STORE",TARGET="$TARGET",A_POSITIONS="$A_POSITIONS",\
