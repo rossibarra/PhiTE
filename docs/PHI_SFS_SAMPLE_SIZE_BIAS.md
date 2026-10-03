@@ -8,6 +8,7 @@
 > tested, but it is accurate to about 25% rather than a few percent near the
 > floor, and raw $\Phi_{\mathrm{obs}}$ is nearly unbiased once the effect exceeds
 > about twice the floor. The "do not subtract" advice below holds for $W_1$ too.
+> `Phi_inf_hat` below is the quantity now called $\hat\Phi_{\mathrm{SFS}}$.
 
 ## Summary
 

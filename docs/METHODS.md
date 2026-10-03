@@ -168,7 +168,7 @@ $N=99$, which gives an exact P-value grid of 0.01.
 
 ## Effect size, P and Z
 
-**Effect size**, $\hat\Phi=\sqrt{\max(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0)}$, in
+**Effect size**, $\hat\Phi_{\mathrm{SFS}}=\sqrt{\max(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0)}$, in
 DAF units: an estimate of the distance between the true spectra. Raw
 $\Phi_{\mathrm{obs}}$ is not an effect size on its own: two finite sets drawn from
 the same spectrum still have $\Phi>0$, and that floor, $\mu_0$, scales as
@@ -180,10 +180,10 @@ is not used. In simulations with a known true distance
 ([PHI_SFS_FLOOR_CORRECTION_W1.md](PHI_SFS_FLOOR_CORRECTION_W1.md)), subtraction
 underestimated every resolvable effect by nearly $\mu_0$; raw
 $\Phi_{\mathrm{obs}}$ was unbiased once the effect exceeded about twice the floor
-but overestimated smaller effects; and $\hat\Phi$ stayed within $+0.4\mu_0$ to
+but overestimated smaller effects; and $\hat\Phi_{\mathrm{SFS}}$ stayed within $+0.4\mu_0$ to
 $-0.25\mu_0$ of the truth, within 24% for every effect tested at $M\ge500$. At
 $M\le250$ no estimate is reliable for effects near the floor. Those simulations
-drew sites i.i.d., without matching or depletion. Report $\hat\Phi$ with
+drew sites i.i.d., without matching or depletion. Report $\hat\Phi_{\mathrm{SFS}}$ with
 $\Phi_{\mathrm{obs}}$, $\mu_0$, $M$ and the signed CDF and bin residuals, which give
 the direction of the shift.
 
@@ -198,7 +198,7 @@ not be plotted or compared across categories.
 
 To plot many categories, use the $\Phi$ scale. For each category, draw its null
 distribution of $\Phi_i^0$ in grey, mark $\mu_0$, and draw $\Phi_{\mathrm{obs}}$
-as a point coloured by $-\log_{10}P_A$. Mark $\hat\Phi$ on the same axis for the
+as a point coloured by $-\log_{10}P_A$. Mark $\hat\Phi_{\mathrm{SFS}}$ on the same axis for the
 effect size. Cap the colour scale at
 $\log_{10}(R+1)$, about 2.7 for $R\approx500$.
 
@@ -206,7 +206,7 @@ $\log_{10}(R+1)$, about 2.7 for $R\approx500$.
 
 In this synthetic example, the >5 kb category has a higher raw
 $\Phi_{\mathrm{obs}}$ than the 2–5 kb category but the smallest effect
-$\hat\Phi$, and is not significant ($P=0.24$), because its small $M$ gives it the
+$\hat\Phi_{\mathrm{SFS}}$, and is not significant ($P=0.24$), because its small $M$ gives it the
 highest floor.
 
 The quadrature correction was first derived for the earlier total-variation

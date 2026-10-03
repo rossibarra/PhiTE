@@ -18,7 +18,7 @@ $W_{1,\infty}$, how well four estimates recover it as the set size $M$ changes:
 |---|---|
 | raw | $\Phi_{\mathrm{obs}}=W_1(A,B_0)$ |
 | subtraction | $\Phi_{\mathrm{obs}}-\mu_0$ |
-| quadrature | $\sqrt{\max(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0)}$ |
+| $\hat\Phi_{\mathrm{SFS}}$ (quadrature) | $\sqrt{\max(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0)}$ |
 | extrapolation | route 2 of PHI_SFS_SAMPLE_SIZE_BIAS.md: subsample $A$ and $B_0$ to $M/2$, $M/4$, $M/8$ (levels $\ge 250$, 400 draws each), regress the squared median distance on $1/L$, take the square root of the intercept |
 
 $\mu_0$ is the mean of $W_1(B_i,B_0)$ over $R=200$ nulls, computed as production
@@ -81,7 +81,7 @@ still be computed for the data at hand, as production does.
 This is the main result, and it differs from total variation. Mean bias in units
 of the floor, by the ratio of the true distance to the floor (all 176 cells):
 
-| $W_1/\mu_0$ | cells | raw | subtraction | quadrature | extrapolation |
+| $W_1/\mu_0$ | cells | raw | subtraction | $\hat\Phi_{\mathrm{SFS}}$ | extrapolation |
 |---|---:|---:|---:|---:|---:|
 | 0 (null) | 16 | +1.00 | +0.00 | +0.40 | +0.50 |
 | 0–0.5 | 16 | +0.70 | -0.30 | +0.11 | +0.23 |
@@ -90,7 +90,7 @@ of the floor, by the ratio of the true distance to the floor (all 176 cells):
 | 2–4 | 34 | +0.02 | -0.98 | -0.22 | -0.10 |
 | ≥ 4 | 56 | -0.00 | -1.00 | -0.08 | -0.01 |
 
-- **Raw $\Phi_{\mathrm{obs}}$** is biased upward by the full floor under the
+- **Raw:** $\Phi_{\mathrm{obs}}$ is biased upward by the full floor under the
   null, but the bias disappears once the true distance exceeds about twice the
   floor. Where the focal CDF lies clearly on one side of the neutral CDF, sampling
   noise moves $|F_A-F_{B_0}|$ up as often as down and averages out, instead of
@@ -98,9 +98,9 @@ of the floor, by the ratio of the true distance to the floor (all 176 cells):
 - **Subtraction** is unbiased only under the null. For any resolvable effect it
   removes a floor that is not there, and underestimates the true distance by
   almost the whole of $\mu_0$.
-- **Quadrature** stays within $+0.40$ to $-0.25$ floors of the truth across the
+- **Quadrature:** $\hat\Phi_{\mathrm{SFS}}$ stays within $+0.40$ to $-0.25$ floors of the truth across the
   whole range: the smallest worst-case bias of the three single-number estimates.
-- **Extrapolation** behaves like quadrature with somewhat smaller bias for
+- **Extrapolation** behaves like $\hat\Phi_{\mathrm{SFS}}$ with somewhat smaller bias for
   resolvable effects, but needs $M\ge500$ and is biased $+0.5$ floors under the
   null.
 
@@ -109,7 +109,7 @@ of the floor, by the ratio of the true distance to the floor (all 176 cells):
 Absolute bias as a percentage of the true distance, median and maximum over the
 20 non-null effects:
 
-| $M$ | raw median / max | subtraction median / max | quadrature median / max | extrapolation median / max |
+| $M$ | raw median / max | subtraction median / max | $\hat\Phi_{\mathrm{SFS}}$ median / max | extrapolation median / max |
 |---:|---:|---:|---:|---:|
 | 100 | 69% / 474% | 82% / 98% | 19% / 132% | — |
 | 250 | 23% / 270% | 71% / 89% | 13% / 60% | — |
@@ -120,7 +120,7 @@ Absolute bias as a percentage of the true distance, median and maximum over the
 | 10,000 | 0% / 5% | 16% / 52% | 2% / 16% | 0% / 14% |
 | 20,000 | 0% / 2% | 10% / 39% | 1% / 10% | 0% / 7% |
 
-At $M\ge500$ the quadrature estimate is within 24% of the truth for every effect
+At $M\ge500$, $\hat\Phi_{\mathrm{SFS}}$ is within 24% of the truth for every effect
 tested, and within 14% for the median effect. Subtraction is off by 43% for the
 median effect at $M=1000$. At $M\le250$ no estimate is reliable for effects near
 the floor.
@@ -129,7 +129,7 @@ the floor.
 
 **dnAging, 3× rate in youngest quarter**, true $W_1=0.0452$. Bias (RMSE):
 
-| $M$ | $\mu_0$ | raw | subtraction | quadrature | extrapolation |
+| $M$ | $\mu_0$ | raw | subtraction | $\hat\Phi_{\mathrm{SFS}}$ | extrapolation |
 |---:|---:|---:|---:|---:|---:|
 | 100 | 0.0360 | +0.0076 (0.0281) | -0.0284 (0.0390) | -0.0088 (0.0339) | — |
 | 250 | 0.0228 | +0.0016 (0.0203) | -0.0212 (0.0295) | -0.0061 (0.0248) | — |
@@ -142,7 +142,7 @@ the floor.
 
 **dnAging, 1.5× rate in youngest quarter**, true $W_1=0.0150$. Bias (RMSE):
 
-| $M$ | $\mu_0$ | raw | subtraction | quadrature | extrapolation |
+| $M$ | $\mu_0$ | raw | subtraction | $\hat\Phi_{\mathrm{SFS}}$ | extrapolation |
 |---:|---:|---:|---:|---:|---:|
 | 100 | 0.0358 | +0.0227 (0.0301) | -0.0130 (0.0220) | +0.0020 (0.0229) | — |
 | 250 | 0.0229 | +0.0107 (0.0174) | -0.0122 (0.0178) | -0.0020 (0.0164) | — |
@@ -154,22 +154,22 @@ the floor.
 | 20,000 | 0.0025 | -0.0001 (0.0025) | -0.0026 (0.0037) | -0.0003 (0.0026) | -0.0001 (0.0025) |
 
 In every cell where the true distance is at least the floor, subtraction has the
-highest RMSE of raw, subtraction and quadrature. Where it is at least twice the
-floor, raw or extrapolation has the lowest RMSE and quadrature is close behind.
+highest RMSE of raw, subtraction and $\hat\Phi_{\mathrm{SFS}}$. Where it is at least twice the
+floor, raw or extrapolation has the lowest RMSE and $\hat\Phi_{\mathrm{SFS}}$ is close behind.
 
 ## Conclusions
 
-1. **The quadrature correction carries over to $W_1$** as the best single-number
+1. **The quadrature correction carries over to** $W_1$. $\hat\Phi_{\mathrm{SFS}}$ is the best single-number
    estimate of the true distance: worst-case bias about $-0.25\mu_0$ for
    resolvable effects and $+0.4\mu_0$ under the null, within 24% of the truth at
    $M\ge500$ for every effect here. PHI_SFS_SAMPLE_SIZE_BIAS.md's "a few percent
    for $n\ge250$" does not hold for $W_1$ near the floor.
-2. **$\Phi_{\mathrm{obs}}-\mu_0$ should not be used as the effect size.** It is
+2. **Subtraction should not be used as the effect size.** $\Phi_{\mathrm{obs}}-\mu_0$ is
    unbiased only when there is no effect, and otherwise underestimates the true
    distance by nearly $\mu_0$, so it penalizes small categories most.
 3. Raw $\Phi_{\mathrm{obs}}$ is nearly unbiased once the effect is more than about
-   twice the floor, so for clearly significant categories raw and quadrature
-   agree. They differ for effects near the floor, where quadrature is less biased.
+   twice the floor, so for clearly significant categories raw and $\hat\Phi_{\mathrm{SFS}}$
+   agree. They differ for effects near the floor, where $\hat\Phi_{\mathrm{SFS}}$ is less biased.
 4. Extrapolation is a useful cross-check for $M\ge1000$, not a replacement.
 
 ## Not tested

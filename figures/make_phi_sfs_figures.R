@@ -142,7 +142,7 @@ make_definition_figure <- function(path) {
 # violin is the category's null distribution of Phi_i^0 (two neutral SNP sets of
 # the same size M), so its height is the finite-sample floor, which shrinks as
 # M grows. The point is Phi_obs, colored by its add-one P-value; the blue bar
-# is the effect size, the floor-corrected sqrt(max(Phi_obs^2 - mu_0^2, 0))
+# is the effect size Phi_SFS-hat, the floor-corrected sqrt(max(Phi_obs^2 - mu_0^2, 0))
 # (docs/PHI_SFS_FLOOR_CORRECTION_W1.md).
 # Values are synthetic. Null means and SDs scale as 1/sqrt(M), anchored to the
 # in-gene production null (mean 0.0050, SD 0.0018 at M = 4,067).
@@ -222,7 +222,7 @@ draw_null_figure <- function() {
     text(0.31, 0.53, expression(paste("Null mean ", mu[0])), adj = 0,
          cex = 1.2, font = 2)
     segments(0.12, 0.425, 0.24, 0.425, col = "#79A6D2", lwd = 3.1)
-    text(0.31, 0.425, expression(hat(Phi)), adj = 0,
+    text(0.31, 0.425, expression(hat(Phi)[SFS]), adj = 0,
          cex = 1.2, font = 2)
     text(0.31, 0.375, "effect size", adj = 0, cex = 1.05)
 
