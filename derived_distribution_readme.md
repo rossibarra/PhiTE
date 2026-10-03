@@ -24,8 +24,8 @@ a derived allele in a given individual:
 
 | genotype | draws that contribute | mass at the site |
 |---|---|---|
-| homozygous ALT | those calling ALT derived | `P(ALT derived)` |
-| homozygous REF | those calling REF derived | `P(REF derived)` |
+| homozygous ALT | those calling ALT derived | posterior probability that ALT is derived |
+| homozygous REF | those calling REF derived | posterior probability that REF is derived |
 | heterozygous | every usable draw, at whichever allele that draw calls derived | 1 |
 
 Each contributing draw enters with weight `1 / (usable draws at that row)`, so a

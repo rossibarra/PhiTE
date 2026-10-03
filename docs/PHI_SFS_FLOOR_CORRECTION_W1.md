@@ -19,14 +19,14 @@ $W_{1,\infty}$, how well four estimates recover it as the set size $M$ changes:
 | raw | $\Phi_{\mathrm{obs}}=W_1(A,B_0)$ |
 | subtraction | $\Phi_{\mathrm{obs}}-\mu_0$ |
 | $\hat\Phi_{\mathrm{SFS}}$ (quadrature) | $\sqrt{\max(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0)}$ |
-| extrapolation | route 2 of PHI_SFS_SAMPLE_SIZE_BIAS.md: subsample $A$ and $B_0$ to $M/2$, $M/4$, $M/8$ (levels $\ge 250$, 400 draws each), regress the squared median distance on $1/L$, take the square root of the intercept |
+| extrapolation | route 2 of PHI_SFS_SAMPLE_SIZE_BIAS.md: subsample $A$ and $B_0$ to sizes $L=M/2$, $M/4$, and $M/8$ (levels $L\ge250$; 400 draws each), regress the squared median distance on $1/L$, then take the square root of the intercept |
 
 $\mu_0$ is the mean of $W_1(B_i,B_0)$ over $R=200$ nulls, computed as production
 computes it, with the same $B_0$ used for $\Phi_{\mathrm{obs}}$.
 
 ## Design
 
-**Site models.** Both use $n=26$ haploids and known polarity.
+**Site models.** Both use $n_{\mathrm{hap}}=26$ haploids and known polarity.
 
 - **dnAging.** The 241,623 sites with true mutation age in $[10^4, 3\times10^6]$
   generations from `msprime_variable_ne_error` replicates 1–10 of the dnAging
@@ -36,13 +36,15 @@ computes it, with the same $B_0$ used for $\Phi_{\mathrm{obs}}$.
   multiplies the rate of sites younger than the 25% or 50% age quantile by 1.25,
   1.5, 2, 3 or 10, or of sites older than the 75% quantile by 1.5 or 3: 12
   effects plus the null.
-- **Toy.** $P(d)\propto(1/d)\,e^{\theta d/n}$ as in
+- **Toy.** The derived-count weight is
+  $f_\theta(d)\propto(1/d)\,e^{\theta d/n_{\mathrm{hap}}}$, as in
   [PHI_SFS_CALIBRATION_VALIDATION.md](PHI_SFS_CALIBRATION_VALIDATION.md), with
   $\theta=0$ for $B$ and $\theta\in\{\pm0.1,\pm0.2,\pm0.4,\pm0.8\}$ for $A$: 8
   effects plus the null.
 
-True distances range from 0.006 to 0.095. **Grid:** $M\in\{100, 250, 500, 1000,
-2500, 5000, 10000, 20000\}$, 2,000 analyses per cell, 176 cells.
+True distances range from 0.006 to 0.095. The grid uses
+$M\in\{100,250,500,1000,2500,5000,10000,20000\}$: 2,000 analyses per cell and
+176 cells in total.
 
 **Truth.** $W_{1,\infty}$ is $W_1$ between the two models' normalized expected
 spectra, computed exactly. It is not read off a large-$M$ plateau, which was the
@@ -98,11 +100,12 @@ of the floor, by the ratio of the true distance to the floor (all 176 cells):
 - **Subtraction** is unbiased only under the null. For any resolvable effect it
   removes a floor that is not there, and underestimates the true distance by
   almost the whole of $\mu_0$.
-- **Quadrature:** $\hat\Phi_{\mathrm{SFS}}$ stays within $+0.40$ to $-0.25$ floors of the truth across the
-  whole range: the smallest worst-case bias of the three single-number estimates.
-- **Extrapolation** behaves like $\hat\Phi_{\mathrm{SFS}}$ with somewhat smaller bias for
-  resolvable effects, but needs $M\ge500$ and is biased $+0.5$ floors under the
-  null.
+- **Quadrature:** $\hat\Phi_{\mathrm{SFS}}$ stays within $+0.40$ to $-0.25$
+  floors of the truth across the whole range: the smallest worst-case bias of
+  the three single-number estimates.
+- **Extrapolation** behaves like $\hat\Phi_{\mathrm{SFS}}$ with somewhat smaller
+  bias for resolvable effects, but needs $M\ge500$ and is biased $+0.5$ floors
+  under the null.
 
 ### 3. Relative error by set size
 
@@ -154,22 +157,25 @@ the floor.
 | 20,000 | 0.0025 | -0.0001 (0.0025) | -0.0026 (0.0037) | -0.0003 (0.0026) | -0.0001 (0.0025) |
 
 In every cell where the true distance is at least the floor, subtraction has the
-highest RMSE of raw, subtraction and $\hat\Phi_{\mathrm{SFS}}$. Where it is at least twice the
-floor, raw or extrapolation has the lowest RMSE and $\hat\Phi_{\mathrm{SFS}}$ is close behind.
+highest RMSE of raw, subtraction and $\hat\Phi_{\mathrm{SFS}}$. Where it is at
+least twice the floor, raw or extrapolation has the lowest RMSE and
+$\hat\Phi_{\mathrm{SFS}}$ is close behind.
 
 ## Conclusions
 
-1. **The quadrature correction carries over to** $W_1$. $\hat\Phi_{\mathrm{SFS}}$ is the best single-number
-   estimate of the true distance: worst-case bias about $-0.25\mu_0$ for
-   resolvable effects and $+0.4\mu_0$ under the null, within 24% of the truth at
-   $M\ge500$ for every effect here. PHI_SFS_SAMPLE_SIZE_BIAS.md's "a few percent
-   for $n\ge250$" does not hold for $W_1$ near the floor.
+1. **The quadrature correction carries over to** $W_1$.
+   $\hat\Phi_{\mathrm{SFS}}$ is the best single-number estimate of the true
+   distance: worst-case bias about $-0.25\mu_0$ for resolvable effects and
+   $+0.4\mu_0$ under the null, within 24% of the truth at $M\ge500$ for every
+   effect here. The earlier note's claim of "a few percent" error for sets of at
+   least 250 sites does not hold for $W_1$ near the floor.
 2. **Subtraction should not be used as the effect size.** $\Phi_{\mathrm{obs}}-\mu_0$ is
    unbiased only when there is no effect, and otherwise underestimates the true
    distance by nearly $\mu_0$, so it penalizes small categories most.
-3. Raw $\Phi_{\mathrm{obs}}$ is nearly unbiased once the effect is more than about
-   twice the floor, so for clearly significant categories raw and $\hat\Phi_{\mathrm{SFS}}$
-   agree. They differ for effects near the floor, where $\hat\Phi_{\mathrm{SFS}}$ is less biased.
+3. Raw $\Phi_{\mathrm{obs}}$ is nearly unbiased once the effect is more than
+   about twice the floor, so for clearly significant categories raw and
+   $\hat\Phi_{\mathrm{SFS}}$ agree. They differ for effects near the floor, where
+   $\hat\Phi_{\mathrm{SFS}}$ is less biased.
 4. Extrapolation is a useful cross-check for $M\ge1000$, not a replacement.
 
 ## Not tested

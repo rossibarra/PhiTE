@@ -4,8 +4,9 @@ This document collects the evidence that PhiTE's Phi-SFS test is calibrated. The
 statistic is defined in [METHODS.md](METHODS.md). The prespecified criteria, and the
 two amendments made after results were seen, are in
 [REMAINING_VALIDATION_PROPOSAL.md](REMAINING_VALIDATION_PROPOSAL.md) (items V1–V11).
-Production settings and measured resources are in
-[BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md).
+Current production settings are in the [README](../README.md) and
+[OPTIONS.md](OPTIONS.md). Historical matching settings and measured resources
+are in [BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md).
 Compact, version-controlled copies of the reports cited below are indexed in
 [validation_artifacts/README.md](validation_artifacts/README.md).
 
@@ -55,7 +56,7 @@ next set and draws $B_0$ uniformly from the completed sets. The depleted sampler
 a binned stand-in, not the production optimizer. Simulation replicates are the
 independent units; repeated focal draws within a replicate add Monte Carlo
 precision but are not independent. Tests with fewer than 19 nulls cannot reach
-$p\le0.05$ and are excluded from rejection rates.
+a Monte Carlo P-value of 0.05 or less and are excluded from rejection rates.
 
 **Original dnAging replicates** (10 replicates, where the former design also
 passed): the all-mixture arms rejected 0.8–4.0% of tests at $\alpha=0.05$. That is

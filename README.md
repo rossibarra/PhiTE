@@ -1,5 +1,7 @@
 # PhiTE v0.9.0
 
+![Graphical abstract of the PhiTE pipeline: posterior ARGs give each site an age and polarity, SNP control sets are matched to the focal set's ages, spectra are compared with Phi-SFS, and null sets calibrate the sampling floor](figures/phite_graphical_abstract.png)
+
 PhiTE asks whether a focal set of variants, usually a category of transposable
 elements (TEs), has a different site-frequency spectrum (SFS) from neutral SNPs of
 the same age. It builds SNP control sets matched to the focal set's posterior ages
@@ -165,20 +167,28 @@ target, bundle, work directory and seed.
 
 `$PHI/summary.csv` holds one row per run. Report, for each category:
 
-- **effect size**, $\hat\Phi_{\mathrm{SFS}}$ =
-  `sqrt(max(observed_phi_sfs² − null_mean², 0))`, in DAF units. Raw `observed_phi_sfs`
-  includes a finite-sample floor that is larger for smaller categories, so it is
-  not comparable across categories on its own. Do not use
-  `observed_phi_sfs − null_mean`: it underestimates real effects by about the
-  floor ([docs/PHI_SFS_FLOOR_CORRECTION_W1.md](docs/PHI_SFS_FLOOR_CORRECTION_W1.md));
-- `p_value`: one-sided, add-one Monte Carlo. With $R\approx500$ the smallest
-  possible value is about 0.002;
-- `site_count_m` ($M$) and `null_replicates_r` ($R$);
+- **effect size**, in DAF units:
+
+  $$
+  \hat\Phi_{\mathrm{SFS}}
+  =\sqrt{\max\!\left(\Phi_{\mathrm{obs}}^2-\mu_0^2,0\right)}.
+  $$
+
+  It is computed from
+  `observed_phi_sfs` ($\Phi_{\mathrm{obs}}$) and `null_mean` ($\mu_0$). Raw
+  `observed_phi_sfs` includes a finite-sample floor that is larger for smaller
+  categories, so it is not comparable across categories on its own. Do not
+  subtract `null_mean`: that underestimates real effects by about the floor
+  ([docs/PHI_SFS_FLOOR_CORRECTION_W1.md](docs/PHI_SFS_FLOOR_CORRECTION_W1.md));
+- `p_value` ($P_A$): one-sided, add-one Monte Carlo. With $R\approx500$ the
+  smallest possible value is about 0.002;
+- `site_count_m` ($M$) and `null_replicates_r` ($R$). The lowercase suffixes are
+  field names; the mathematical symbols are uppercase;
 - the CDFs and signed bin residuals (`observed_cdf_residual.npy`,
   `observed_bin_residual.npy`) for the direction of the shift.
 
-`z_score` grows with $M$ for the same departure, so it measures test strength,
-not effect size; do not plot it or compare it across categories.
+`z_score` ($Z_A$) grows with $M$ for the same departure, so it measures test
+strength, not effect size; do not plot it or compare it across categories.
 Between-category contrasts (`normalize_tes.phi_contrast`) are experimental and
 not validated. Report each category separately. See
 [docs/METHODS.md](docs/METHODS.md) for definitions and caveats.
@@ -224,13 +234,14 @@ Before using a result:
 - `normalize_tes/`: the production package (`python -m normalize_tes.COMMAND`).
 - `slurm/`: Farm launchers. `tools/`: diagnostics, simulations and validation
   reports. `tests/`: the test suite.
-- [docs/BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md): production
-  settings, measured resources and acceptance criteria.
+- [docs/BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md): historical
+  matcher validation, measured resources and acceptance criteria at the tested
+  settings.
 - [docs/REMAINING_VALIDATION_PROPOSAL.md](docs/REMAINING_VALIDATION_PROPOSAL.md):
   the frozen v0.9.0 validation plan and its amendments.
 - [docs/BOOTSTRAP_TARGET_MATCHING_PLAN.md](docs/BOOTSTRAP_TARGET_MATCHING_PLAN.md),
   [docs/PHI_SFS_WASSERSTEIN_CODING_PLAN.md](docs/PHI_SFS_WASSERSTEIN_CODING_PLAN.md):
-  matching and Phi-SFS designs.
+  historical matching and Phi-SFS design plans.
 - [docs/BOOTSTRAP_DISCARDED_APPROACHES.md](docs/BOOTSTRAP_DISCARDED_APPROACHES.md):
   approaches evaluated and rejected.
 - [docs/CODE_REVIEW_ROUND12.md](docs/CODE_REVIEW_ROUND12.md): the latest review.

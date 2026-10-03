@@ -3,12 +3,21 @@
 This document defines the statistic PhiTE reports, how sites are polarized, and
 how the null is calibrated. The operator guide is the [README](../README.md); the
 evidence that the design is calibrated is in [VALIDATION.md](VALIDATION.md); the
-implementation design is in
+original implementation plan is in
 [PHI_SFS_WASSERSTEIN_CODING_PLAN.md](PHI_SFS_WASSERSTEIN_CODING_PLAN.md).
 
-Notation: uppercase $M$ is the number of sites in each compared set; lowercase
-$m=20$ is the number of individuals in the SFS projection. $R$ is the number of
-null sets.
+Notation used throughout:
+
+- $A$ is the focal set, $B_0$ is its reference control set, and $B_i$ is the
+  $i$th null control set.
+- $M$ is the number of sites in each compared set, and $R$ is the number of
+  null sets.
+- At one site, $n$ is the number of callable inbred genotypes and $k$ is the
+  number carrying ALT. Each callable genotype contributes one allele state.
+- $m=20$ is the number of callable genotypes in the projected SFS. It is fixed
+  across sites and is distinct from the set size $M$.
+- $p=k/n$ is the observed ALT frequency, and $q$ is the posterior probability
+  that ALT is derived.
 
 ## The statistic
 
@@ -62,18 +71,27 @@ Phi-SFS refuse a target built with a TE polarity mask.
 
 ## Polarity: one posterior rule for every site
 
-Every site, TE or SNP, focal or control, is polarized the same way. Let $p$ be the
-observed ALT frequency and
+Every site, TE or SNP, focal or control, is polarized the same way. Define $q$
+as the fraction of usable ARG draws in which ALT is derived:
 
 $$
-q=P(\mathrm{ALT\ is\ derived}\mid\mathrm{usable\ ARG\ draws}),
+q=\Pr(\mathrm{ALT\ is\ derived}\mid\mathrm{usable\ ARG\ draws}).
 $$
 
-the fraction of usable ARG draws in which ALT is derived. The site contributes the
-posterior mixture of its two orientations,
+The site contributes the posterior mixture of its two orientations,
 
 $$
-q\,h(k,n)+(1-q)\,h(n-k,n).
+q\,h_m(k,n)+(1-q)\,h_m(n-k,n).
+$$
+
+Here $h_m(k,n)$ is the hypergeometric probability vector for the derived-allele
+count after projecting $k$ ALT copies among $n$ callable genotypes to $m$
+genotypes. Its component for projected count $j$ is
+
+$$
+h_{m,j}(k,n)
+=\frac{\binom{k}{j}\binom{n-k}{m-j}}{\binom{n}{m}},
+\qquad j=0,\ldots,m.
 $$
 
 All $q\in[0,1]$ are kept; there is no polarity filter. ARG draws that cannot
@@ -106,7 +124,8 @@ $$
 \Phi_i^0=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{mix}},B_{0,\mathrm{mix}}).
 $$
 
-Because $E[h(\mathrm{DAF})]=q\,h(k,n)+(1-q)\,h(n-k,n)$, a Bernoulli-$q$ hard
+Because the expected projected spectrum is
+$q\,h_m(k,n)+(1-q)\,h_m(n-k,n)$, a Bernoulli-$q$ hard
 spectrum is the mixture plus imputation noise that carries no information about
 the data. The mixture avoids that noise and does not depend on an imputation seed.
 
@@ -126,8 +145,9 @@ sampling floor is calibrated separately for every focal category rather than
 comparing raw Phi-SFS values across categories.
 
 1. Apply matching QC. Draw $B_0$ uniformly from the QC-passing sets, with a seed
-   derived from `--reference-seed` and the target's seed identity (below). Every other QC-passing
-   set is a null, so $R$ is whatever passes QC; production requires $R\ge450$.
+   derived from `--reference-seed` and the target's seed identity (below). Every
+   other QC-passing set is a null, so $R$ is whatever passes QC; production
+   requires $R\ge450$.
 2. $\Phi_{\mathrm{obs}}=\Phi_{\mathrm{SFS}}(A,B_0)$.
 3. $\Phi_i^0=\Phi_{\mathrm{SFS}}(B_i,B_0)$ for $i=1,\ldots,R$. Each $\Phi_i^0$ is
    a raw distance between two neutral SNP sets, not a Z-score.
@@ -166,48 +186,55 @@ which shows how much the result depends on that one draw.
 the seeded permutation and the nulls are the next $N$. The negative control uses
 $N=99$, which gives an exact P-value grid of 0.01.
 
-## Effect size, P and Z
+## Effect size, P-value and Z-score
 
-**Effect size**, $\hat\Phi_{\mathrm{SFS}}=\sqrt{\max(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0)}$, in
-DAF units: an estimate of the distance between the true spectra. Raw
+**Effect size**, in DAF units:
+
+$$
+\hat\Phi_{\mathrm{SFS}}
+=\sqrt{\max\!\left(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0\right)}.
+$$
+
+This estimates the distance between the true spectra. Raw
 $\Phi_{\mathrm{obs}}$ is not an effect size on its own: two finite sets drawn from
 the same spectrum still have $\Phi>0$, and that floor, $\mu_0$, scales as
-$1/\sqrt{M}$, so it is larger for smaller $M$. A small category can therefore have the largest raw
-$\Phi_{\mathrm{obs}}$ and the smallest departure.
+$1/\sqrt{M}$, so it is larger for smaller $M$. A small category can therefore
+have the largest raw $\Phi_{\mathrm{obs}}$ and the smallest departure.
 
 The floor does not simply add to a real difference, so $\Phi_{\mathrm{obs}}-\mu_0$
 is not used. In simulations with a known true distance
 ([PHI_SFS_FLOOR_CORRECTION_W1.md](PHI_SFS_FLOOR_CORRECTION_W1.md)), subtraction
 underestimated every resolvable effect by nearly $\mu_0$; raw
 $\Phi_{\mathrm{obs}}$ was unbiased once the effect exceeded about twice the floor
-but overestimated smaller effects; and $\hat\Phi_{\mathrm{SFS}}$ stayed within $+0.4\mu_0$ to
-$-0.25\mu_0$ of the truth, within 24% for every effect tested at $M\ge500$. At
-$M\le250$ no estimate is reliable for effects near the floor. Those simulations
-drew sites i.i.d., without matching or depletion. Report $\hat\Phi_{\mathrm{SFS}}$ with
+but overestimated smaller effects; and $\hat\Phi_{\mathrm{SFS}}$ stayed within
+$+0.4\mu_0$ to $-0.25\mu_0$ of the truth, within 24% for every effect tested at
+$M\ge500$. At $M\le250$ no estimate is reliable for effects near the floor.
+Those simulations drew sites i.i.d., without matching or depletion. Report
+$\hat\Phi_{\mathrm{SFS}}$ with
 $\Phi_{\mathrm{obs}}$, $\mu_0$, $M$ and the signed CDF and bin residuals, which give
 the direction of the shift.
 
-**P** tests whether the focal spectrum is farther from its matched neutral
-background than two finite neutral samples of the same size would be. It is the
-significance of the departure, not its size.
+**P-value**, $P_A$, tests whether the focal spectrum is farther from its matched
+neutral background than two finite neutral samples of the same size would be.
+It is the significance of the departure, not its size.
 
-**Z**, $Z_A$, expresses the departure in null standard deviations. Because $s_0$
-shrinks as $M$ grows, $Z_A$ grows with $M$ for a fixed spectral difference, so it
-measures test strength, not effect size. It is kept in `summary.csv` but should
-not be plotted or compared across categories.
+**Z-score**, $Z_A$, expresses the departure in null standard deviations. Because
+$s_0$ shrinks as $M$ grows, $Z_A$ grows with $M$ for a fixed spectral difference,
+so it measures test strength, not effect size. It is kept in `summary.csv` but
+should not be plotted or compared across categories.
 
 To plot many categories, use the $\Phi$ scale. For each category, draw its null
 distribution of $\Phi_i^0$ in grey, mark $\mu_0$, and draw $\Phi_{\mathrm{obs}}$
-as a point coloured by $-\log_{10}P_A$. Mark $\hat\Phi_{\mathrm{SFS}}$ on the same axis for the
-effect size. Cap the colour scale at
+as a point coloured by $-\log_{10}P_A$. Mark $\hat\Phi_{\mathrm{SFS}}$ on the
+same axis for the effect size. Cap the colour scale at
 $\log_{10}(R+1)$, about 2.7 for $R\approx500$.
 
 ![Illustrative Phi-SFS null distributions by category, with observed values, null means, effect sizes and P-value colours](../figures/phi_sfs_null_example.png)
 
 In this synthetic example, the >5 kb category has a higher raw
 $\Phi_{\mathrm{obs}}$ than the 2–5 kb category but the smallest effect
-$\hat\Phi_{\mathrm{SFS}}$, and is not significant ($P=0.24$), because its small $M$ gives it the
-highest floor.
+$\hat\Phi_{\mathrm{SFS}}$, and is not significant ($P_A=0.24$), because its
+small $M$ gives it the highest floor.
 
 The quadrature correction was first derived for the earlier total-variation
 statistic ([PHI_SFS_SAMPLE_SIZE_BIAS.md](PHI_SFS_SAMPLE_SIZE_BIAS.md)); its
@@ -232,7 +259,7 @@ validation for $W_1$ is in
   strongly clustered sets.
 - **A is observed once.** The focal set is fixed, so small or unusual focal sets
   can give unstable results even after calibration. Always report $M$, the raw
-  distance, null mean and SD, Z, P, $R$ and the matching diagnostics.
+  distance, null mean and SD, $Z_A$, $P_A$, $R$ and the matching diagnostics.
 - **Between-category contrasts are not supported.** `normalize_tes.phi_contrast`
   is experimental: its random pairing of category nulls is not validated and
   ignores covariance between nested or overlapping categories. Report each

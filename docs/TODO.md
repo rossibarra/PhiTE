@@ -25,15 +25,9 @@ at two or more effect sizes" rule.
 Estimate: 1–2 hours of code, then about 1 hour of compute (the V1 arms took about
 40 minutes per condition).
 
-## ~~Check the floor correction for $W_1$~~ (done 2026-10-02)
+## Production-matched floor correction
 
 See [PHI_SFS_FLOOR_CORRECTION_W1.md](PHI_SFS_FLOOR_CORRECTION_W1.md). Quadrature
-is now the recommended effect size. Open: the check used i.i.d. sites; repeating
-it with matched, depleted control sets would test whether production $\mu_0$
+is now the recommended effect size. The completed check used i.i.d. sites;
+repeat it with matched, depleted control sets to test whether production $\mu_0$
 behaves like the i.i.d. floor.
-
-## Merge the release branch into main
-
-The GitHub front page shows `main`. Open a PR from
-`bootstrap-target-hpc-validation`, and optionally publish a GitHub release from
-the `v0.9.0` tag.
