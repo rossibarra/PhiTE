@@ -1,0 +1,178 @@
+{
+  "root": "results/v6",
+  "alpha": 0.05,
+  "tests": 300,
+  "status_counts": {
+    "ok": 300
+  },
+  "qc_passes_min": 110,
+  "rejections": 11,
+  "clopper_pearson_upper_95": 0.05996237193522752,
+  "p_deciles_counts": [
+    27,
+    38,
+    32,
+    29,
+    27,
+    23,
+    25,
+    33,
+    34,
+    32
+  ],
+  "p_deciles_expected_each": 30.0,
+  "p_grid_counts_to_0.10": {
+    "0.01": 1,
+    "0.02": 2,
+    "0.03": 1,
+    "0.04": 6,
+    "0.05": 1,
+    "0.06": 3,
+    "0.07": 6,
+    "0.08": 1,
+    "0.09": 3,
+    "0.10": 3
+  },
+  "p_mean": 0.5067333333333334,
+  "z_mean": -0.024650249578036697,
+  "focal_overlap": {
+    "focal_set_sizes": [
+      4000
+    ],
+    "distinct_sites_across_tests": 1175405,
+    "pairs": 44850,
+    "shared_sites_mean": 0.556098104793757,
+    "shared_sites_median": 0.0,
+    "shared_sites_max": 7,
+    "pairs_sharing_any_site": 19136,
+    "most_tests_containing_one_site": 4
+  },
+  "criteria": [
+    {
+      "criterion": "evaluable tests",
+      "value": 300,
+      "threshold": "== 300",
+      "pass": true
+    },
+    {
+      "criterion": "tests with exactly R = 99 nulls",
+      "value": 300,
+      "threshold": "== 300",
+      "pass": true
+    },
+    {
+      "criterion": "recomputed add-one P agrees",
+      "value": 300,
+      "threshold": "== 300",
+      "pass": true
+    },
+    {
+      "criterion": "rejections at p <= 0.05",
+      "value": 11,
+      "threshold": "<= 21",
+      "pass": true
+    },
+    {
+      "criterion": "rejection rate",
+      "value": 0.0367,
+      "threshold": "<= 0.075",
+      "pass": true
+    },
+    {
+      "criterion": "one-sided 95% Clopper-Pearson upper bound",
+      "value": 0.06,
+      "threshold": "< 0.1",
+      "pass": true
+    }
+  ],
+  "blocks": [
+    {
+      "grouping": "test",
+      "first": 0,
+      "last": 49,
+      "tests": 50,
+      "rejections": 2,
+      "rate": 0.04
+    },
+    {
+      "grouping": "test",
+      "first": 50,
+      "last": 99,
+      "tests": 50,
+      "rejections": 1,
+      "rate": 0.02
+    },
+    {
+      "grouping": "test",
+      "first": 100,
+      "last": 149,
+      "tests": 50,
+      "rejections": 1,
+      "rate": 0.02
+    },
+    {
+      "grouping": "test",
+      "first": 150,
+      "last": 199,
+      "tests": 50,
+      "rejections": 3,
+      "rate": 0.06
+    },
+    {
+      "grouping": "test",
+      "first": 200,
+      "last": 249,
+      "tests": 50,
+      "rejections": 1,
+      "rate": 0.02
+    },
+    {
+      "grouping": "test",
+      "first": 250,
+      "last": 299,
+      "tests": 50,
+      "rejections": 3,
+      "rate": 0.06
+    },
+    {
+      "grouping": "reference_replicate_id",
+      "first": 0,
+      "last": 21,
+      "tests": 55,
+      "rejections": 2,
+      "rate": 0.03636363636363636
+    },
+    {
+      "grouping": "reference_replicate_id",
+      "first": 22,
+      "last": 43,
+      "tests": 61,
+      "rejections": 3,
+      "rate": 0.04918032786885246
+    },
+    {
+      "grouping": "reference_replicate_id",
+      "first": 44,
+      "last": 65,
+      "tests": 61,
+      "rejections": 3,
+      "rate": 0.04918032786885246
+    },
+    {
+      "grouping": "reference_replicate_id",
+      "first": 66,
+      "last": 87,
+      "tests": 45,
+      "rejections": 1,
+      "rate": 0.022222222222222223
+    },
+    {
+      "grouping": "reference_replicate_id",
+      "first": 88,
+      "last": 109,
+      "tests": 78,
+      "rejections": 2,
+      "rate": 0.02564102564102564
+    }
+  ]
+}

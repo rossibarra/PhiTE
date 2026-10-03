@@ -183,13 +183,6 @@ if used != wanted:
         f"{eligibility} (identity fields differing: {', '.join(differing)})"
     )
 PYEOF
-# A masked target does not use the scratch-backed CDF writer: te_age_target
-# builds the whole block in memory. For those runs --mem, not scratch, is the
-# constraint, and the job prints its projected peak before building.
-if [[ "$A_TYPE" == "TE" ]]; then
-    echo "note: masked target construction builds CDFs in memory; --mem is the" \
-         "binding constraint, not scratch"
-fi
 echo "staging $STORE to $TMPDIR/interval_store"; date
 rsync -a --delete "$STORE/" "$TMPDIR/interval_store/"
 date

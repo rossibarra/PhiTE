@@ -1,0 +1,7 @@
+criterion,value,threshold,pass
+evaluable tests,300,== 300,True
+tests with exactly R = 99 nulls,300,== 300,True
+recomputed add-one P agrees,300,== 300,True
+rejections at p <= 0.05,11,<= 21,True
+rejection rate,0.0367,<= 0.075,True
+one-sided 95% Clopper-Pearson upper bound,0.06,< 0.1,True

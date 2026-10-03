@@ -1,0 +1,105 @@
+{
+  "matches": "results/bootstrap_matches/in_gene_rc2_first500",
+  "phi": "results/phi_sfs/in_gene_rc2_first500",
+  "min_qc_passes": 451,
+  "criteria": [
+    {
+      "criterion": "maximum control reuse",
+      "value": 1,
+      "threshold": "== 1",
+      "pass": true
+    },
+    {
+      "criterion": "sets containing a duplicate control",
+      "value": 0,
+      "threshold": "== 0",
+      "pass": true
+    },
+    {
+      "criterion": "QC-passing sets",
+      "value": 500,
+      "threshold": ">= 451",
+      "pass": true
+    },
+    {
+      "criterion": "fewest QC passes in a complete block of 100",
+      "value": 100,
+      "threshold": ">= 80",
+      "pass": true
+    },
+    {
+      "criterion": "QC pass-rate fall, first to last block (points)",
+      "value": 0.0,
+      "threshold": "<= 10",
+      "pass": true
+    },
+    {
+      "criterion": "SFS distance to pooled spectrum: |rho| with replicate ID",
+      "value": 0.0265,
+      "threshold": "|rho| < 0.1",
+      "pass": true
+    },
+    {
+      "criterion": "SFS distance to pooled spectrum: early-vs-late |SMD|",
+      "value": 0.0139,
+      "threshold": "|SMD| < 0.2",
+      "pass": true
+    }
+  ],
+  "blocks": [
+    {
+      "block": 0,
+      "first_replicate": 0,
+      "last_replicate": 99,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 53.146894890803324,
+      "median_matching_error_ratio": 0.032316015862756314
+    },
+    {
+      "block": 1,
+      "first_replicate": 100,
+      "last_replicate": 199,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 53.2864434151214,
+      "median_matching_error_ratio": 0.032404342520495386
+    },
+    {
+      "block": 2,
+      "first_replicate": 200,
+      "last_replicate": 299,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 54.1199910076758,
+      "median_matching_error_ratio": 0.03385379983801404
+    },
+    {
+      "block": 3,
+      "first_replicate": 300,
+      "last_replicate": 399,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 50.30286204347554,
+      "median_matching_error_ratio": 0.02975682108172148
+    },
+    {
+      "block": 4,
+      "first_replicate": 400,
+      "last_replicate": 499,
+      "qc_passes": 100,
+      "median_match_to_bootstrap_w1": 52.857677244247654,
+      "median_matching_error_ratio": 0.03307001493377108
+    }
+  ],
+  "diagnostics": {
+    "rho_match_to_bootstrap_w1": -0.019752943011772044,
+    "rho_matching_error_ratio": -0.002369001476005904,
+    "median_w1_shift_first_to_last_block": -0.28921764655567017,
+    "median_error_ratio_shift_first_to_last_block": 0.0007539990710147687,
+    "metadata_qc_passes": 500,
+    "metadata_maximum_control_reuse": 1,
+    "replicates": 500,
+    "set_size": 4067,
+    "published_sets": 500,
+    "quarter_size": 125,
+    "early_mean_distance": 0.0030706626817701924,
+    "late_mean_distance": 0.003092092262673333
+  }
+}

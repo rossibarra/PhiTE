@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Commit compact V1, V2, V4, V5 and V6 validation reports under
+  `docs/validation_artifacts/`, and regenerate the amended 500-set V4 report
+  with its correct 451-pass threshold.
+- Write V6 scheduler logs to the submission directory so a fresh checkout does
+  not require a pre-existing, untracked `logs/` directory; remove a stale
+  masked-target message from the production matching launcher.
 - Seeds no longer depend on the target's floating-point outputs. The matcher
   (algorithm `bootstrap-target-exact-greedy-v2`) derives every bootstrap and
   restart seed, and Phi-SFS derives the $B_0$ draw, from `target_seed_identity`:

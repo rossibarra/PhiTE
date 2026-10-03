@@ -9,8 +9,8 @@
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=96G
 #SBATCH --time=16:00:00
-#SBATCH --output=logs/v6-%A_%a.out
-#SBATCH --error=logs/v6-%A_%a.err
+#SBATCH --output=v6-%A_%a.out
+#SBATCH --error=v6-%A_%a.err
 #
 # V6 real-data negative control (docs/REMAINING_VALIDATION_PROPOSAL.md). One
 # array task is one test, identified by SLURM_ARRAY_TASK_ID (0-299):
@@ -31,6 +31,8 @@
 #
 # Submit from the repository root, for example the pilot:
 #   sbatch --array=0-9 slurm/run_v6_negative_control.sbatch
+# Scheduler logs are written to that directory. Slurm opens them before the
+# script starts, so the launcher cannot safely target a directory it creates.
 
 set -euo pipefail
 PROJECT="${PROJECT:-${SLURM_SUBMIT_DIR:?submit from the repository root}}"
