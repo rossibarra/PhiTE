@@ -39,17 +39,20 @@ excess of rare or high-frequency derived alleles.
 
 ## Matched controls
 
-Each control set independently bootstraps the focal set's site ages (iid, from all
-usable posterior draws) and matches exactly $M$ SNPs to that bootstrap age CDF.
-The matcher never looks at allele frequency. Production publishes 500 sets in
-disjoint mode: once a SNP is used it is removed from the pool, so no SNP appears
-in two sets.
+For each control set, the focal set's site ages (from all usable posterior draws)
+are resampled with replacement, each site drawn independently and uniformly, and
+exactly $M$ SNPs are matched to that bootstrap age CDF. A fresh bootstrap is drawn
+for every set. The matcher never looks at allele frequency. Production publishes
+500 sets in disjoint mode: once a SNP is used it is removed from the pool, so no
+SNP appears in two sets.
 
-Disjoint matching draws later sets from a depleted pool, so the sets are not
-identically distributed. In a 1,001-set run on the in-gene category
-($M=4{,}067$), sets after about 800 drifted away from the earlier ones; the first
-500 did not. Production therefore uses 500 sets, and every category must pass the
-drift check in the README before its result is used (see
+The bootstrap resamples focal sites iid, but the matched control sets themselves
+are not iid. Disjoint matching draws later sets from a depleted pool, so the sets
+are neither independent nor identically distributed. In a 1,001-set run on the
+in-gene category ($M=4{,}067$), sets after about 800 drifted away from the
+earlier ones; the first 500 did not. Production therefore uses 500 sets, and
+every category must pass the drift check in the README before its result is used
+(see
 [VALIDATION.md](VALIDATION.md#v4-and-v5-production-matching-and-phi-sfs)). A
 larger category depletes the pool faster, so its drift may start earlier.
 
@@ -131,16 +134,16 @@ comparing raw Phi-SFS values across categories.
 4. With $\mu_0$ and $s_0$ the mean and sample standard deviation of the
    $\Phi_i^0$,
 
-   $$
+   ```math
    Z_A=\frac{\Phi_{\mathrm{obs}}-\mu_0}{s_0}.
-   $$
+   ```
 
 5. The one-sided Monte Carlo P-value is
 
-   $$
+   ```math
    P_A=\frac{1+\sum_{i=1}^{R}
    \mathbf{1}\!\left(\Phi_i^0\ge \Phi_{\mathrm{obs}}\right)}{R+1}.
-   $$
+   ```
 
 The add-one P-value is valid for any $R$. With $R\approx500$ the smallest
 attainable value is about $2\times10^{-3}$.
@@ -165,7 +168,7 @@ $N=99$, which gives an exact P-value grid of 0.01.
 
 ## Effect size, P and Z
 
-**Effect size: $\Phi_{\mathrm{obs}}-\mu_0$**, in DAF units. Raw
+**Effect size**, $\Phi_{\mathrm{obs}}-\mu_0$, in DAF units. Raw
 $\Phi_{\mathrm{obs}}$ is not an effect size on its own: two finite sets drawn from
 the same spectrum still have $\Phi>0$, and that floor, $\mu_0$, is larger for
 smaller $M$. A small category can therefore have the largest raw
@@ -179,7 +182,7 @@ and the signed CDF and bin residuals, which give the direction of the shift.
 background than two finite neutral samples of the same size would be. It is the
 significance of the departure, not its size.
 
-**$Z_A$** expresses the departure in null standard deviations. Because $s_0$
+**Z**, $Z_A$, expresses the departure in null standard deviations. Because $s_0$
 shrinks as $M$ grows, $Z_A$ grows with $M$ for a fixed spectral difference, so it
 measures test strength, not effect size. It is kept in `summary.csv` but should
 not be plotted or compared across categories.
