@@ -17,6 +17,12 @@
   the identity against the target and records `reference_seed_basis`. Bundles
   without a seed identity (v0.9.0 and earlier) keep the digest rule. The same
   seed now gives different sets than matcher v1 did.
+- The recommended effect size is now the floor-corrected
+  $\sqrt{\max(\Phi_{\mathrm{obs}}^2-\mu_0^2,0)}$, replacing
+  $\Phi_{\mathrm{obs}}-\mu_0$, which simulation showed underestimates real
+  effects by about $\mu_0$ (`docs/PHI_SFS_FLOOR_CORRECTION_W1.md`,
+  `tools/validate_floor_correction.py`). No output changes; `summary.csv`
+  already holds both inputs. The example figure marks the new effect size.
 
 ## v0.9.0 — 2026-10-02
 
