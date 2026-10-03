@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Clarify and standardize mathematical notation across the README and linked
+  method documents, fix the rendered effect-size formula, and remove stale
+  instructions from the to-do list.
 - Commit compact V1, V2, V4, V5 and V6 validation reports under
   `docs/validation_artifacts/`, and regenerate the amended 500-set V4 report
   with its correct 451-pass threshold.

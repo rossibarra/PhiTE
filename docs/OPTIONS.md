@@ -143,7 +143,7 @@ exactly, including whether the checkout had uncommitted edits.
 | `--ancestral-table` | ancestral-state table; orients every TE and SNP | required |
 | `-A`, `--a-type` | focal type | `TE` |
 | `-B`, `--b-type` | control type; only `SNP` | `SNP` |
-| `--reference-seed` | seed, with the target digest, for drawing $B_0$ | 1002 |
+| `--reference-seed` | seed, with the target seed identity, for drawing $B_0$; legacy v0.9.0 bundles use the target digest | 1002 |
 | `--reference-replicate` | use this replicate ID as $B_0$ instead of drawing it | none |
 | `--min-null-replicates` | fail if fewer QC-passing nulls | 450 |
 | `--max-null-replicates N` | fix $R=N$ from the seeded permutation; fails if fewer than $N+1$ pass | every passing set |
@@ -186,8 +186,9 @@ built with the TE polarity mask, exits if `TE_POLARITY_MASK` or
 `MAX_FLIPPED_FRACTION` is set, rejects an unrestricted candidate universe, and
 checks that the candidate provenance names the same eligibility artifact. It
 always passes `--resume`, so an identical resubmission continues after preemption.
-Measured runtimes and memory are in
-[BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md).
+Historical runtime and memory measurements are in
+[BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md); check their recorded
+settings before using them for current resource estimates.
 
 ## Many categories
 
