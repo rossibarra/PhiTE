@@ -48,23 +48,29 @@ Run production analyses from a release tag or fixed commit (`git checkout TAG`).
 ## Configure
 
 ```bash
-POSTERIOR_DIR=/path/posterior          # *.tsz ARG draws
-CHROM_OFFSETS=/path/chrom_offsets.txt
-SNP_POSITIONS=/path/snp/all_snp.pos.txt
-ALL_TE_POSITIONS=/path/te/all_te.pos.txt
-A_POSITIONS=/path/te/in_gene.pos.txt   # the focal category
-A_TYPE=TE                              # SNP for a negative control
-VCF=/path/variants.vcf.gz
+# Inputs
+POSTERIOR_DIR=/path/posterior          # directory of posterior ARG draws (*.tsz)
+CHROM_OFFSETS=/path/chrom_offsets.txt  # chromosome start offsets in the ARGs' global coordinates
+SNP_POSITIONS=/path/snp/all_snp.pos.txt   # every filtered SNP: the pool controls come from
+ALL_TE_POSITIONS=/path/te/all_te.pos.txt  # every TE, all categories: never used as controls
+A_POSITIONS=/path/te/in_gene.pos.txt   # the focal set A for this run (one TE category)
+A_TYPE=TE                              # type of A: TE, or SNP for a negative control
+VCF=/path/variants.vcf.gz              # filtered, biallelic VCF; TEs coded as ACGT sites
 
-STORE=results/age_interval_store
-ANCESTRAL=results/ancestral_states
-VCF_ELIGIBILITY=results/vcf_eligibility
-CANDIDATES=results/candidate_rows.npy
-TARGET=results/targets/in_gene
-MATCHES=results/bootstrap_matches/in_gene
-WORK_DIR=results/work/in_gene
-PHI=results/phi_sfs/in_gene
-mkdir -p results/targets results/bootstrap_matches results/work results/phi_sfs
+# Shared outputs (steps 1-4)
+STORE=results/age_interval_store       # 1: posterior age intervals for every site
+ANCESTRAL=results/ancestral_states     # 2: P(ALT is derived) for every site
+VCF_ELIGIBILITY=results/vcf_eligibility  # 3: sites callable in the VCF and orientable by the ARGs
+CANDIDATES=results/candidate_rows.npy  # 4: SNPs eligible as controls
+
+# Per-category outputs (steps 5-6 and verification)
+TARGET=results/targets/in_gene         # 5: A's posterior ages, the target controls are matched to
+MATCHES=results/bootstrap_matches/in_gene  # 5: the 500 age-matched SNP control sets
+WORK_DIR=results/work/in_gene          # 5: matcher checkpoints, so a preempted run can resume
+PHI=results/phi_sfs/in_gene            # 6: Phi-SFS, null calibration and summary.csv
+VERIFY=results/verification/in_gene    # acceptance report for this category
+mkdir -p results/targets results/bootstrap_matches results/work results/phi_sfs \
+  results/verification
 ```
 
 Every output path must be new; no tool overwrites an existing result. Run every
@@ -72,7 +78,8 @@ step on a compute node, not a login node.
 
 ## Run
 
-Steps 1–4 are built once and shared by all categories. Steps 5–6 run per category.
+Steps 1–4 are built once and shared by all TE categories (a SNP negative control
+rebuilds step 4). Steps 5–6 run per category.
 
 **1. Interval store**: posterior age intervals for every SNP and TE.
 
@@ -97,7 +104,9 @@ python -m normalize_tes.vcf_eligibility \
   --output "$VCF_ELIGIBILITY"
 ```
 
-**4. Candidate controls**: filtered SNPs, with every TE and every A site removed.
+**4. Candidate controls**: filtered SNPs, minus every TE (all categories) and the
+focal set A. Every TE category gets the same file, because its A is already among
+the TEs; a SNP negative control needs its own, built with its `A_POSITIONS`.
 
 ```bash
 python -m normalize_tes.build_candidate_rows \
@@ -136,17 +145,32 @@ python -m normalize_tes.phi_sfs \
 
 The defaults publish 500 sets and require at least 450 QC-passing nulls.
 
-### On Farm
+### On HPC with Slurm
 
 The launchers activate the conda environment and carry the production settings.
-Submit them from the repository root:
+They are set up for UC Davis Farm (`--account=jrigrp`, partitions `high` and
+`low`, `module load conda`); on another cluster, edit those lines first. Submit
+them from the repository root:
 
 ```bash
+# step 1 (1 CPU, 64 GB, up to 8 h; uses node-local $TMPDIR)
+sbatch --export=ALL,TREES="$POSTERIOR_DIR/*.tsz",CHROM_OFFSETS="$CHROM_OFFSETS",\
+OUTPUT="$STORE" slurm/run_interval_store.sbatch
+
 # step 2 as an array of 15 parts, then a merge
 sbatch --array=0-14 --export=ALL,STORE="$STORE",TREES="$POSTERIOR_DIR/*.tsz",\
 OUTPUT=results/ancestral-parts,PER_TASK=5 slurm/run_ancestral_table.sbatch
 sbatch --export=ALL,STORE="$STORE",MERGE=1,PARTS="results/ancestral-parts/part-*",\
 OUTPUT="$ANCESTRAL",EXPECT_DRAWS=75 slurm/run_ancestral_table.sbatch
+
+# step 3
+sbatch --export=ALL,VCF="$VCF",STORE="$STORE",ANCESTRAL="$ANCESTRAL",\
+OUTPUT="$VCF_ELIGIBILITY" slurm/run_vcf_eligibility.sbatch
+
+# step 4
+sbatch --export=ALL,STORE="$STORE",SNP_POSITIONS="$SNP_POSITIONS",\
+ALL_TE_POSITIONS="$ALL_TE_POSITIONS",A_POSITIONS="$A_POSITIONS",\
+VCF_ELIGIBILITY="$VCF_ELIGIBILITY",OUTPUT="$CANDIDATES" slurm/run_candidate_rows.sbatch
 
 # step 5 (builds the target if it does not exist)
 sbatch --export=ALL,STORE="$STORE",TARGET="$TARGET",A_POSITIONS="$A_POSITIONS",\
@@ -169,10 +193,10 @@ target, bundle, work directory and seed.
 
 - **effect size**, in DAF units:
 
-  $$
+  ```math
   \hat\Phi_{\mathrm{SFS}}
-  =\sqrt{\max\!\left(\Phi_{\mathrm{obs}}^2-\mu_0^2,0\right)}.
-  $$
+  =\sqrt{\max\left(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0\right)}.
+  ```
 
   It is computed from
   `observed_phi_sfs` ($\Phi_{\mathrm{obs}}$) and `null_mean` ($\mu_0$). Raw
@@ -187,35 +211,39 @@ target, bundle, work directory and seed.
 - the CDFs and signed bin residuals (`observed_cdf_residual.npy`,
   `observed_bin_residual.npy`) for the direction of the shift.
 
-`z_score` ($Z_A$) grows with $M$ for the same departure, so it measures test
-strength, not effect size; do not plot it or compare it across categories.
-Between-category contrasts (`normalize_tes.phi_contrast`) are experimental and
-not validated. Report each category separately. See
-[docs/METHODS.md](docs/METHODS.md) for definitions and caveats.
+Not for reporting:
+
+- `z_score` ($Z_A$), also in `summary.csv`: it grows with $M$ for the same
+  departure, so it measures test strength, not effect size. Do not plot it or
+  compare it across categories;
+- between-category contrasts (the separate `normalize_tes.phi_contrast`
+  module): experimental and not validated. Report each category separately.
+
+See [docs/METHODS.md](docs/METHODS.md) for definitions and caveats.
 
 ## Verify a run
 
-Before using a result:
+Run the acceptance checks before using a result:
 
-1. Every `metadata.json` records the expected release, commit and input identities.
-2. The candidate report meets `--min-resolved-fraction` and names the intended
-   store and eligibility artifact.
-3. The target records the intended `a_type` and no `te_polarity` mask.
-4. The bundle has 500 sets in disjoint mode, maximum control reuse 1, and the sets
-   used by Phi-SFS all pass matching QC.
-5. The Phi-SFS result records
-   `null_polarity_design=posterior-mixture-vs-posterior-mixture` and equal $M$ for
-   A and every set.
-6. **The matched sets do not drift with matching order.** Validation covers 500
-   sets at $M\approx4{,}000$ only, and a larger category depletes the control pool
-   faster. Do not use a category's result until this passes:
+```bash
+python -m normalize_tes.verify_run \
+  --candidate-rows "$CANDIDATES" --target "$TARGET" \
+  --matches "$MATCHES" --phi "$PHI" -A "$A_TYPE" \
+  --output "$VERIFY"
+```
 
-   ```bash
-   python -m tools.v4_depletion_report --matches "$MATCHES" --phi "$PHI" \
-     --min-qc-passes 451 --output results/drift/in_gene
-   ```
+The verifier authenticates the candidate, target, matched bundle and Phi-SFS
+provenance; requires the current checkout's release and commit; checks the
+production settings (500 disjoint sets, at least 451 QC passes, no control
+reuse, posterior-mixture polarity and equal $M$); and tests matching-order drift.
+It writes `criteria.csv`, `blocks.csv` and `report.json`, and exits nonzero if
+any criterion fails. Every row of `criteria.csv` must read `True`.
 
-   Every row of `criteria.csv` must read `True`.
+By default, the expected commit is the verifier's current checkout. Use
+`--expected-commit COMMIT` only when intentionally verifying artifacts from a
+different fixed commit. The automated checks cannot decide whether
+`A_POSITIONS`, the VCF and the control-position lists are the scientifically
+intended inputs; confirm those choices separately.
 
 ## Outputs
 
@@ -228,11 +256,12 @@ Before using a result:
 | `targets/CATEGORY/` | focal age target and acceptance threshold |
 | `bootstrap_matches/CATEGORY/` | the 500 disjoint control sets, QC and reuse checks |
 | `phi_sfs/CATEGORY/` | spectra, CDFs, distances, null Z-scores, `summary.csv`, provenance |
+| `verification/CATEGORY/` | pass/fail criteria, block summaries and verification provenance |
 
 ## Repository and further documents
 
 - `normalize_tes/`: the production package (`python -m normalize_tes.COMMAND`).
-- `slurm/`: Farm launchers. `tools/`: diagnostics, simulations and validation
+- `slurm/`: Slurm launchers (set up for Farm). `tools/`: diagnostics, simulations and validation
   reports. `tests/`: the test suite.
 - [docs/BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md): historical
   matcher validation, measured resources and acceptance criteria at the tested

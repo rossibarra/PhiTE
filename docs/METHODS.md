@@ -192,7 +192,7 @@ $N=99$, which gives an exact P-value grid of 0.01.
 
 $$
 \hat\Phi_{\mathrm{SFS}}
-=\sqrt{\max\!\left(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0\right)}.
+=\sqrt{\max\left(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0\right)}.
 $$
 
 This estimates the distance between the true spectra. Raw
