@@ -141,8 +141,9 @@ make_definition_figure <- function(path) {
 # Null figure: Phi-SFS on its own scale, one category per column. The gray
 # violin is the category's null distribution of Phi_i^0 (two neutral SNP sets of
 # the same size M), so its height is the finite-sample floor, which shrinks as
-# M grows. The point is Phi_obs, colored by its add-one P-value; the segment
-# from the null mean mu_0 to Phi_obs is the effect size, Phi_obs - mu_0.
+# M grows. The point is Phi_obs, colored by its add-one P-value; the blue bar
+# is the effect size, the floor-corrected sqrt(max(Phi_obs^2 - mu_0^2, 0))
+# (docs/PHI_SFS_FLOOR_CORRECTION_W1.md).
 # Values are synthetic. Null means and SDs scale as 1/sqrt(M), anchored to the
 # in-gene production null (mean 0.0050, SD 0.0018 at M = 4,067).
 draw_violin <- function(values, center, width = 0.30) {
@@ -186,7 +187,8 @@ draw_null_figure <- function() {
         draw_violin(nulls[[i]], i)
         mu <- mean(nulls[[i]])
         segments(i - 0.16, mu, i + 0.16, mu, col = "#6F6F6F", lwd = 2.6)
-        segments(i, mu, i, observed[i], col = "#79A6D2", lwd = 3.1)
+        phi_hat <- sqrt(max(observed[i]^2 - mu^2, 0))
+        segments(i - 0.16, phi_hat, i + 0.16, phi_hat, col = "#79A6D2", lwd = 3.1)
     }
     points(1:4, observed, pch = 21, bg = point_colors,
            col = "white", lwd = 2.0, cex = 2.4)
@@ -219,8 +221,8 @@ draw_null_figure <- function() {
     segments(0.12, 0.53, 0.24, 0.53, col = "#6F6F6F", lwd = 2.6)
     text(0.31, 0.53, expression(paste("Null mean ", mu[0])), adj = 0,
          cex = 1.2, font = 2)
-    segments(0.18, 0.39, 0.18, 0.46, col = "#79A6D2", lwd = 3.1)
-    text(0.31, 0.425, expression(Phi[obs] - mu[0]), adj = 0,
+    segments(0.12, 0.425, 0.24, 0.425, col = "#79A6D2", lwd = 3.1)
+    text(0.31, 0.425, expression(hat(Phi)), adj = 0,
          cex = 1.2, font = 2)
     text(0.31, 0.375, "effect size", adj = 0, cex = 1.05)
 

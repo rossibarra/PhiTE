@@ -5,7 +5,7 @@ noise. This script measures how well four estimates recover the true distance
 W1_inf between the two underlying spectra, as a function of set size M:
 
   raw   Phi_obs
-  sub   Phi_obs - mu_0                       (production effect size)
+  sub   Phi_obs - mu_0                       (effect size recommended before this check)
   quad  sqrt(max(Phi_obs^2 - mu_0^2, 0))     (PHI_SFS_SAMPLE_SIZE_BIAS.md route 1)
   ext   subsample A and B0 to M/2, M/4, M/8 (levels >= 250), regress the squared
         median Phi on 1/L, sqrt of the intercept    (route 2)

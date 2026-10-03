@@ -2,9 +2,12 @@
 
 > **Note (2026-10-02).** This analysis used the earlier total-variation form of
 > Phi-SFS. The current statistic is the Wasserstein distance $W_1$
-> ([METHODS.md](METHODS.md)). The floor still exists for $W_1$, but the
-> quadrature correction below has not been validated for it. Production reports
-> $\Phi_{\mathrm{obs}}-\mu_0$ as the effect size until it is.
+> ([METHODS.md](METHODS.md)). For $W_1$ see
+> [PHI_SFS_FLOOR_CORRECTION_W1.md](PHI_SFS_FLOOR_CORRECTION_W1.md): the floor
+> still scales as $1/\sqrt{n}$ and quadrature is the best of the corrections
+> tested, but it is accurate to about 25% rather than a few percent near the
+> floor, and raw $\Phi_{\mathrm{obs}}$ is nearly unbiased once the effect exceeds
+> about twice the floor. The "do not subtract" advice below holds for $W_1$ too.
 
 ## Summary
 

@@ -165,9 +165,12 @@ target, bundle, work directory and seed.
 
 `$PHI/summary.csv` holds one row per run. Report, for each category:
 
-- **effect size: `observed_phi_sfs − null_mean`**, in DAF units. Raw
-  `observed_phi_sfs` includes a finite-sample floor that is larger for smaller
-  categories, so it is not comparable across categories on its own;
+- **effect size: `sqrt(max(observed_phi_sfs² − null_mean², 0))`**, in DAF
+  units, with `observed_phi_sfs` and `null_mean`. Raw `observed_phi_sfs`
+  includes a finite-sample floor that is larger for smaller categories, so it is
+  not comparable across categories on its own. Do not use
+  `observed_phi_sfs − null_mean`: it underestimates real effects by about the
+  floor ([docs/PHI_SFS_FLOOR_CORRECTION_W1.md](docs/PHI_SFS_FLOOR_CORRECTION_W1.md));
 - `p_value`: one-sided, add-one Monte Carlo. With $R\approx500$ the smallest
   possible value is about 0.002;
 - `site_count_m` ($M$) and `null_replicates_r` ($R$);

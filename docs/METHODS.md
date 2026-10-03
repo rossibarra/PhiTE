@@ -168,15 +168,24 @@ $N=99$, which gives an exact P-value grid of 0.01.
 
 ## Effect size, P and Z
 
-**Effect size**, $\Phi_{\mathrm{obs}}-\mu_0$, in DAF units. Raw
+**Effect size**, $\hat\Phi=\sqrt{\max(\Phi_{\mathrm{obs}}^2-\mu_0^2,\,0)}$, in
+DAF units: an estimate of the distance between the true spectra. Raw
 $\Phi_{\mathrm{obs}}$ is not an effect size on its own: two finite sets drawn from
-the same spectrum still have $\Phi>0$, and that floor, $\mu_0$, is larger for
-smaller $M$. A small category can therefore have the largest raw
-$\Phi_{\mathrm{obs}}$ and the smallest departure. Subtracting the category's own
-null mean removes the floor. It is an approximate correction: under an
-alternative, the observed distance and the floor need not simply add, so the
-excess is not necessarily the distance between the true spectra. Report it with $M$
-and the signed CDF and bin residuals, which give the direction of the shift.
+the same spectrum still have $\Phi>0$, and that floor, $\mu_0$, scales as
+$1/\sqrt{M}$, so it is larger for smaller $M$. A small category can therefore have the largest raw
+$\Phi_{\mathrm{obs}}$ and the smallest departure.
+
+The floor does not simply add to a real difference, so $\Phi_{\mathrm{obs}}-\mu_0$
+is not used. In simulations with a known true distance
+([PHI_SFS_FLOOR_CORRECTION_W1.md](PHI_SFS_FLOOR_CORRECTION_W1.md)), subtraction
+underestimated every resolvable effect by nearly $\mu_0$; raw
+$\Phi_{\mathrm{obs}}$ was unbiased once the effect exceeded about twice the floor
+but overestimated smaller effects; and $\hat\Phi$ stayed within $+0.4\mu_0$ to
+$-0.25\mu_0$ of the truth, within 24% for every effect tested at $M\ge500$. At
+$M\le250$ no estimate is reliable for effects near the floor. Those simulations
+drew sites i.i.d., without matching or depletion. Report $\hat\Phi$ with
+$\Phi_{\mathrm{obs}}$, $\mu_0$, $M$ and the signed CDF and bin residuals, which give
+the direction of the shift.
 
 **P** tests whether the focal spectrum is farther from its matched neutral
 background than two finite neutral samples of the same size would be. It is the
@@ -189,21 +198,21 @@ not be plotted or compared across categories.
 
 To plot many categories, use the $\Phi$ scale. For each category, draw its null
 distribution of $\Phi_i^0$ in grey, mark $\mu_0$, and draw $\Phi_{\mathrm{obs}}$
-as a point coloured by $-\log_{10}P_A$, with a segment from $\mu_0$ to
-$\Phi_{\mathrm{obs}}$ for the effect size. Cap the colour scale at
+as a point coloured by $-\log_{10}P_A$. Mark $\hat\Phi$ on the same axis for the
+effect size. Cap the colour scale at
 $\log_{10}(R+1)$, about 2.7 for $R\approx500$.
 
 ![Illustrative Phi-SFS null distributions by category, with observed values, null means, effect sizes and P-value colours](../figures/phi_sfs_null_example.png)
 
-In this synthetic example, the >5 kb category has the highest raw
-$\Phi_{\mathrm{obs}}$ but the smallest effect, and is not significant, because
-its small $M$ gives it the highest floor.
+In this synthetic example, the >5 kb category has a higher raw
+$\Phi_{\mathrm{obs}}$ than the 2–5 kb category but the smallest effect
+$\hat\Phi$, and is not significant ($P=0.24$), because its small $M$ gives it the
+highest floor.
 
-`docs/PHI_SFS_SAMPLE_SIZE_BIAS.md` gives a floor correction,
-$\sqrt{\Phi_{\mathrm{obs}}^2-\Phi_{\mathrm{floor}}^2}$, that recovers the true
-distance more closely. It was validated for the earlier total-variation
-statistic, not for the current Wasserstein distance, so it is not used here until
-it has been checked for $W_1$.
+The quadrature correction was first derived for the earlier total-variation
+statistic ([PHI_SFS_SAMPLE_SIZE_BIAS.md](PHI_SFS_SAMPLE_SIZE_BIAS.md)); its
+validation for $W_1$ is in
+[PHI_SFS_FLOOR_CORRECTION_W1.md](PHI_SFS_FLOOR_CORRECTION_W1.md).
 
 ## Assumptions and limits
 

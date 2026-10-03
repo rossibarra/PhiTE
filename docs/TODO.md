@@ -25,12 +25,12 @@ at two or more effect sizes" rule.
 Estimate: 1–2 hours of code, then about 1 hour of compute (the V1 arms took about
 40 minutes per condition).
 
-## Check the floor correction for $W_1$
+## ~~Check the floor correction for $W_1$~~ (done 2026-10-02)
 
-`PHI_SFS_SAMPLE_SIZE_BIAS.md` validated
-$\sqrt{\Phi_{\mathrm{obs}}^2-\Phi_{\mathrm{floor}}^2}$ for the earlier
-total-variation statistic only. Simulate known spectral differences at several
-$M$ and check whether it, or $\Phi_{\mathrm{obs}}-\mu_0$, recovers the true $W_1$.
+See [PHI_SFS_FLOOR_CORRECTION_W1.md](PHI_SFS_FLOOR_CORRECTION_W1.md). Quadrature
+is now the recommended effect size. Open: the check used i.i.d. sites; repeating
+it with matched, depleted control sets would test whether production $\mu_0$
+behaves like the i.i.d. floor.
 
 ## Merge the release branch into main
 
