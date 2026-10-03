@@ -196,11 +196,15 @@ target, bundle, work directory and seed.
 - the CDFs and signed bin residuals (`observed_cdf_residual.npy`,
   `observed_bin_residual.npy`) for the direction of the shift.
 
-`z_score` ($Z_A$) grows with $M$ for the same departure, so it measures test
-strength, not effect size; do not plot it or compare it across categories.
-Between-category contrasts (`normalize_tes.phi_contrast`) are experimental and
-not validated. Report each category separately. See
-[docs/METHODS.md](docs/METHODS.md) for definitions and caveats.
+Not for reporting:
+
+- `z_score` ($Z_A$), also in `summary.csv`: it grows with $M$ for the same
+  departure, so it measures test strength, not effect size. Do not plot it or
+  compare it across categories;
+- between-category contrasts (the separate `normalize_tes.phi_contrast`
+  module): experimental and not validated. Report each category separately.
+
+See [docs/METHODS.md](docs/METHODS.md) for definitions and caveats.
 
 ## Verify a run
 
