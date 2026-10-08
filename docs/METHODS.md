@@ -154,16 +154,11 @@ comparing raw Phi-SFS values across categories.
 4. With $\mu_0$ and $s_0$ the mean and sample standard deviation of the
    $\Phi_i^0$,
 
-   ```math
-   Z_A=\frac{\Phi_{\mathrm{obs}}-\mu_0}{s_0}.
-   ```
+   $$Z_A=\frac{\Phi_{\mathrm{obs}}-\mu_0}{s_0}.$$
 
 5. The one-sided Monte Carlo P-value is
 
-   ```math
-   P_A=\frac{1+\sum_{i=1}^{R}
-   \mathbf{1}\!\left(\Phi_i^0\ge \Phi_{\mathrm{obs}}\right)}{R+1}.
-   ```
+   $$P_A=\frac{1+\sum_{i=1}^{R} \mathbf{1}\negthinspace \left(\Phi_i^0\ge \Phi_{\mathrm{obs}}\right)}{R+1}.$$
 
 The add-one P-value is valid for any $R$. With $R\approx500$ the smallest
 attainable value is about $2\times10^{-3}$.
