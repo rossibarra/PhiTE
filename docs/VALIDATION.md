@@ -23,13 +23,13 @@ Compact, version-controlled copies of the reports cited below are indexed in
 | V7 | exchangeability | covered by V4, V5 and V6 |
 | V8 | between-category contrasts | out of scope; `phi_contrast` stays experimental |
 | V9 | release housekeeping | **pass**; tests pass, and the 15 dirty-checkout V6 tests were rerun (Amendment B) |
-| V10 | ancestral-table digests, fixed-$R$ option | done |
+| V10 | ancestral-table digests, fixed-$`R`$ option | done |
 | V11 | documented limits | see [METHODS.md](METHODS.md#assumptions-and-limits) |
 
 ## Polarity construction
 
 The dnAging simulations are neutral throughout, so any rejection rate above
-$\alpha$ is miscalibration. With nulls hard-oriented by Bernoulli-$q$ and $B_0$ a
+$\alpha$ is miscalibration. With nulls hard-oriented by Bernoulli-$`q`$ and $B_0$ a
 posterior mixture, giving the focal set its true polarity rejected far above the
 nominal rate once the ARG was inferred without ancestral information. Rejection
 fractions at $\alpha=0.05$, 150 tests per cell, from
@@ -40,7 +40,7 @@ fractions at $\alpha=0.05$, 150 tests per cell, from
 | true polarity everywhere (oracle) | 0.09 | 0.05 | 0.09 |
 | A true-hard, no filter, true ages | 0.24 | 0.44 | 0.83 |
 | A true-hard, filtered, agreeing-draw ages, inferred ages (former production) | 0.27 | 0.75 | 0.97 |
-| A Bernoulli-$q$, like the nulls | 0.09 | 0.10 | 0.07 |
+| A Bernoulli-$`q`$, like the nulls | 0.09 | 0.10 | 0.07 |
 
 The reference-haplotype replicates (`results/sim_dnaging_refhap/arms_v1/`) show the
 same pattern. Treating A like the nulls removes the excess, which is why TEs are
@@ -65,7 +65,7 @@ nulls.
 
 **Unpolarised and reference-haplotype replicates (V1)**, where the former design
 failed. On the same 10 paired replicates the simulator's `production` arm (A true,
-$B_0$ a mixture, Bernoulli-$q$ nulls) rejected 14–83% of tests. The four
+$B_0$ a mixture, Bernoulli-$`q`$ nulls) rejected 14–83% of tests. The four
 all-mixture arms, with equal replicate weights:
 
 | condition | rejection rate per cell | one-sided 95% upper bound |
@@ -150,8 +150,8 @@ The result is conditional on this genome, this candidate pool, and $M=4{,}000$,
 and uses SNP focal sets only. Report:
 [validation_artifacts/v6](validation_artifacts/v6/), from `tools/v6_report.py`.
 
-**Earlier pilot (superseded).** 100 held-out real SNP sets, Bernoulli-$q$ focal
-sets against a mixture reference with 344 Bernoulli-$q$ nulls, rejected 7 of 100
+**Earlier pilot (superseded).** 100 held-out real SNP sets, Bernoulli-$`q`$ focal
+sets against a mixture reference with 344 Bernoulli-$`q`$ nulls, rejected 7 of 100
 (Wilson 95% interval 0.034–0.137). All 100 tests shared one reference and one null
 vector, so the P-values were dependent, and none of the sets met the production
 matching threshold. Provenance: `results/phi_sfs/snp_type1_asymmetric_100/summary.json`.

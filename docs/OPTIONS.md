@@ -148,7 +148,7 @@ exactly, including whether the checkout had uncommitted edits.
 | `--min-null-replicates` | fail if fewer QC-passing nulls | 450 |
 | `--max-null-replicates N` | fix $R=N$ from the seeded permutation; fails if fewer than $N+1$ pass | every passing set |
 | `--reference-sensitivity N` | repeat calibration with the next $N$ sets as $B_0$ | 0 |
-| `--asymmetric-polarity-null` | Bernoulli-$q$ option (see [METHODS.md](METHODS.md)) | off |
+| `--asymmetric-polarity-null` | Bernoulli-$`q`$ option (see [METHODS.md](METHODS.md)) | off |
 | `--polarity-imputation-seed` | seed for that option | 2001 |
 | `--heterozygous` | must match the eligibility artifact | `error` |
 | `--output` | new result directory | required |

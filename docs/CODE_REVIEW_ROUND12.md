@@ -334,7 +334,7 @@ Applied to `README.md` in `1c95b81` (backup `README.md.pre-round12.bak`):
 - The distance symbols $D_{\mathrm{obs}}$ and $D_i^0$ are now $\Phi_{\mathrm{obs}}$
   and $\Phi_i^0$, removing the clash with the age distance $D(\cdot,\cdot)$ in the
   B/E/O/R definitions.
-- Reference sensitivity was described as using "its own first-$R$-QC-passing" nulls;
+- Reference sensitivity was described as using "its own first-$`R`$-QC-passing" nulls;
   each alternative reference now reads as using every other QC-passing set as its
   nulls (`normalize_tes/phi_sfs.py:906-916`).
 - "Replicate 0 is not used by default" read as though replicate 0 were excluded; it
@@ -353,7 +353,7 @@ Proposed with this review (draft README):
 - "Null calibration, Z-scores, and P-values", step 1: random $B_0$ is described as
   making the reference choice uniform and SFS-blind among accepted sets; the README
   now says this does not make depleted sets identically distributed or show that the
-  A-versus-$B_0$ comparison is exchangeable with the null comparisons, and that this
+  A-versus-$`B_0`$ comparison is exchangeable with the null comparisons, and that this
   is an open validation item (finding 7).
 - Step 4 reports $Z_A$ as a "standardized test statistic", not a "null-standardized
   effect size". The plot guidance is kept, with a warning that Z is not comparable as
@@ -373,7 +373,7 @@ Proposed with this review (draft README):
 - The methods-list entry for this review mentions the Codex review and the proposed
   validation study.
 
-Also corrected in the same pass: the README sentence "$B_0$ is drawn before any SFS is
+Also corrected in the same pass: the README sentence "$`B_0`$ is drawn before any SFS is
 examined, so it is exchangeable with the other QC-passing sets" now says only that the
 reference choice is SFS-blind (finding 7); the figure alt text "standardized Phi-SFS
 effects" now reads "test statistics" (finding 4); and two `normalize_tes/phi_sfs.py`

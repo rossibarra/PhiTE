@@ -9,7 +9,7 @@ original implementation plan is in
 Notation used throughout:
 
 - $A$ is the focal set, $B_0$ is its reference control set, and $B_i$ is the
-  $i$th null control set.
+  $`i`$th null control set.
 - $M$ is the number of sites in each compared set, and $R$ is the number of
   null sets.
 - At one site, $n$ is the number of callable inbred genotypes and $k$ is the
@@ -125,12 +125,12 @@ $$
 $$
 
 Because the expected projected spectrum is
-$q\,h_m(k,n)+(1-q)\,h_m(n-k,n)$, a Bernoulli-$q$ hard
+$q\,h_m(k,n)+(1-q)\,h_m(n-k,n)$, a Bernoulli-$`q`$ hard
 spectrum is the mixture plus imputation noise that carries no information about
 the data. The mixture avoids that noise and does not depend on an imputation seed.
 
-**Option: Bernoulli-$q$ hard orientation** (`--asymmetric-polarity-null`). A and
-every $B_i$ are hard-oriented by one Bernoulli-$q$ draw per site, and $B_0$ stays a
+**Option: Bernoulli-$`q`$ hard orientation** (`--asymmetric-polarity-null`). A and
+every $B_i$ are hard-oriented by one Bernoulli-$`q`$ draw per site, and $B_0$ stays a
 mixture:
 $\Phi_i^0=\Phi_{\mathrm{SFS}}(B_{i,\mathrm{Bernoulli}(q)},B_{0,\mathrm{mix}})$. ALT
 is declared derived when a reproducible coordinate-keyed uniform variate is less
@@ -245,8 +245,8 @@ validation for $W_1$ is in
 
 - **Exchangeability.** Drawing $B_0$ at random makes the choice of reference
   uniform among accepted sets. It does not make depleted sets identically
-  distributed, and does not show that the $A$-versus-$B_0$ comparison is
-  exchangeable with the $B_i$-versus-$B_0$ comparisons
+  distributed, and does not show that the $A$-versus-$`B_0`$ comparison is
+  exchangeable with the $B_i$-versus-$`B_0`$ comparisons
   ([review 12](CODE_REVIEW_ROUND12.md), finding 7). The negative control, the
   drift check and reference sensitivity together address this
   ([VALIDATION.md](VALIDATION.md)).
