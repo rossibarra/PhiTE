@@ -17,6 +17,7 @@ from normalize_tes.phi_sfs import (
     SYMMETRIC_NULL_DESIGN,
     SiteCount,
     accumulate_spectrum,
+    adjusted_phi_sfs,
     calibrate_phi,
     hypergeometric_projection,
     main,
@@ -258,6 +259,11 @@ def test_phi_agrees_with_scipy_wasserstein_distance():
 
 
 # ----------------------------------------------------------- null calibration
+
+
+def test_adjusted_phi_sfs_removes_null_floor_in_quadrature():
+    assert adjusted_phi_sfs(0.4, 0.2) == pytest.approx(np.sqrt(0.12))
+    assert adjusted_phi_sfs(0.1, 0.2) == 0.0
 
 
 def test_calibrate_phi_uses_sample_sd_and_add_one_p_value():
@@ -607,6 +613,9 @@ def test_end_to_end_metadata_and_diagnostics(tmp_path):
     )
     summary = dict(zip(summary_header, summary_values))
     assert float(summary["observed_phi_sfs"]) == pytest.approx(0.1)
+    assert float(summary["adjusted_phi_sfs"]) == pytest.approx(
+        np.sqrt(max(0.1**2 - 0.175**2, 0.0))
+    )
     assert float(summary["p_value"]) == pytest.approx(1.0)
 
 
