@@ -130,6 +130,12 @@ class PhiCalibration(NamedTuple):
     null_z_scores: np.ndarray
 
 
+def adjusted_phi_sfs(observed: float, null_mean: float) -> float:
+    """Remove the finite-sample null floor from an observed Phi-SFS distance."""
+
+    return math.sqrt(max(observed**2 - null_mean**2, 0.0))
+
+
 def hypergeometric_projection(k: int, n: int, m: int = PROJECTION_SIZE) -> np.ndarray:
     """Return the expected derived-count distribution after projection to m.
 
@@ -1455,6 +1461,9 @@ def calculate(args: argparse.Namespace) -> None:
             "null_replicates_r": null_count,
             "reference_replicate_id": reference_id,
             "observed_phi_sfs": calibration.observed,
+            "adjusted_phi_sfs": adjusted_phi_sfs(
+                calibration.observed, calibration.null_mean
+            ),
             "null_mean": calibration.null_mean,
             "null_sample_sd": calibration.null_sd,
             "z_score": calibration.z_score,
