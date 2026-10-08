@@ -140,10 +140,10 @@ Only QC-passing sets enter the Φ-SFS analysis.
 Require the matcher's `--disjoint-replicates` mode, its production setting, so
 that no control SNP appears in more than one of $B_0,B_1,\ldots,B_R$. Shared
 controls make two sets resemble each other more than independent draws would,
-which deflates the $B_i$-to-$B_0$ null distances and makes the test
+which deflates the $B_i$-to-$`B_0`$ null distances and makes the test
 anticonservative. With reuse allowed, the matcher reached a maximum reuse of 30
 on the in-gene target (`BOOTSTRAP_HPC_VALIDATION.md`). The effect of that reuse
-on $B_i$-to-$B_0$ distances has not been measured, so reuse cannot be treated as
+on $B_i$-to-$`B_0`$ distances has not been measured, so reuse cannot be treated as
 harmless. Because $B_0$ is one of the disjoint replicates, it is automatically
 disjoint from every $B_i$ and needs no special removal step.
 
@@ -340,7 +340,7 @@ Refactor the current single loop into these stages:
 
 Keep $B_0$ fixed for every comparison in one analysis. Do not calculate the
 observed statistic against the average SNP SFS: that would have a different
-finite-sample distribution from each $B_i$-to-$B_0$ null distance.
+finite-sample distribution from each $B_i$-to-$`B_0`$ null distance.
 
 Vectorize the distance calculation after constructing the SFS matrix:
 

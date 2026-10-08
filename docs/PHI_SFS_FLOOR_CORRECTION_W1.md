@@ -47,7 +47,7 @@ $M\in\{100,250,500,1000,2500,5000,10000,20000\}$: 2,000 analyses per cell and
 176 cells in total.
 
 **Truth.** $W_{1,\infty}$ is $W_1$ between the two models' normalized expected
-spectra, computed exactly. It is not read off a large-$M$ plateau, which was the
+spectra, computed exactly. It is not read off a large-$`M`$ plateau, which was the
 weakness of the earlier analysis.
 
 **Production code used unchanged:** `hypergeometric_projection`,
