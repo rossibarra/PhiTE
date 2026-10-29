@@ -272,5 +272,7 @@ intended inputs; confirm those choices separately.
   approaches evaluated and rejected.
 - [docs/CODE_REVIEW_ROUND12.md](docs/CODE_REVIEW_ROUND12.md): the latest review.
 - [docs/CHANGELOG.md](docs/CHANGELOG.md): release-level changes.
+- [docs/MATCH_SET_PLOTS.md](docs/MATCH_SET_PLOTS.md): diagnostic figures comparing tested,
+  accepted and observed sets (and a random-SNP baseline) for a matcher run.
 
 Other plans and older reviews in `docs/` are development history, not instructions.
