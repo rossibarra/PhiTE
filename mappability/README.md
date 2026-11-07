@@ -39,6 +39,9 @@ within one chromosome overstates mappability.
 
 - `B73v5_bisulfite_k100_e2.mappable.bed`: 3-column BED (0-based, half-open),
   all of chr1-10 and the scaffolds in the reference.
+  A gzipped copy of the K=100, E=2 result is committed as
+  `mappability/B73v5_bisulfite_k100_e2.mappable.bed.gz` (about 15 MB; 2,013,753
+  intervals, 46.7% of the 2.18 Gb reference mappable).
 - `B73v5_bisulfite_k100_e2.summary.tsv`: per sequence, count of unique top- and
   bottom-strand windows and the mappable fraction.
 - `B73v5_k100_e2/`: intermediates (converted FASTA, index, raw frequencies).
