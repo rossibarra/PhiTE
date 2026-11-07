@@ -35,4 +35,6 @@ genmap index -F "$W/ct.fa" -I "$W/idx"
 genmap map -I "$W/idx" -O "$W/map" -K "$K" -E "$E" -nc -fs -r -T "$SLURM_CPUS_PER_TASK"
 python mappability/genmap_to_bed.py "$W/ct.fa" "$W/map.freq8" "$OUT.mappable.bed" \
     --K "$K" --summary "$OUT.summary.tsv"
+# Intermediates (converted FASTA, index, raw frequencies; ~25 GB) are not kept.
+rm -rf "$W"
 echo "done: $OUT.mappable.bed"

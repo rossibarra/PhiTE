@@ -14,10 +14,9 @@ mismatches allowed and reads from either strand.
 |---|---|
 | [`B73v5_bisulfite_k100_e2.mappable.bed.gz`](B73v5_bisulfite_k100_e2.mappable.bed.gz) | The mask: 2,013,753 intervals of mappable bases, 3-column BED (0-based, half-open), chr1-10 and all scaffolds. About 15 MB gzipped (committed here). |
 | `results/mappability/B73v5_bisulfite_k100_e2.summary.tsv` | Per-sequence counts of unique top- and bottom-strand windows and the mappable fraction (untracked; `results/` is git-ignored). |
-| `results/mappability/B73v5_bisulfite_k100_e2.mappable.bed` | Uncompressed BED, identical to the `.gz` (untracked). |
 
-Reference: `/quobyte/jrigrp/DATA/RESOURCES/NAM/fasta/Zm-B73-REFERENCE-NAM-5.0.fa.gz`
-(Farm).
+Reference: [B73 v5 (Zm-B73-REFERENCE-NAM-5.0)](https://download.maizegdb.org/Zm-B73-REFERENCE-NAM-5.0/Zm-B73-REFERENCE-NAM-5.0.fa.gz)
+from MaizeGDB.
 
 ## Scripts
 
@@ -38,19 +37,19 @@ Reference: `/quobyte/jrigrp/DATA/RESOURCES/NAM/fasta/Zm-B73-REFERENCE-NAM-5.0.fa
 2. **Converted the reference** with `bisulfite_convert.py` (N and other non-ACGT
    become N).
 3. **Counted k-mer occurrences genome-wide** with GenMap: `genmap index`, then
-   `genmap map -K 100 -E 2 -nc`. `-nc` (no reverse complement) is required because
-   both strands are already in the FASTA; GenMap's default would also search the
-   reverse complement of the converted sequence, which is not a bisulfite read.
-4. **Piloted on chr10 alone** (both strands, same settings) to learn GenMap's
-   output layout, runtime and memory: index 1:37 and 1.9 GB, map 9:00 and 1.2 GB.
-   40.8% of chr10 100-mers were unique and 60.8% of its bases mappable. These
-   are not genome-wide values, because uniqueness was judged against chr10 only.
-5. **Ran the whole genome** (Slurm job 40473019, 16 CPUs, 96 GB requested,
+   `genmap map -K 100 -E 2 -nc`. `-K 100` is the read length. `-E 2` allows up to
+   2 mismatches: a 100-mer counts as a repeat if it occurs elsewhere in the
+   converted genome with at most 2 positions differing, so near-copies count as
+   multi-mapping (indels are not modelled). `-nc` (no reverse complement) is
+   required because both strands are already in the FASTA; GenMap's default would
+   also search the reverse complement of the converted sequence, which is not a
+   bisulfite read.
+4. **Ran the whole genome** (Slurm job 40473019, 16 CPUs, 96 GB requested,
    2 h 11 min total). Peak memory was not recorded.
-6. **Made the BED.** A 100 bp window is *uniquely mappable* if its top-strand
-   k-mer or its bottom-strand k-mer (the matching `__rc` position) has frequency
-   1. A base is *mappable* if at least one uniquely mappable window covers it.
-   The BED holds the maximal runs of mappable bases.
+5. **Made the BED.** A 100 bp window is *uniquely mappable* if its top-strand
+   k-mer, or its bottom-strand k-mer (the matching `__rc` position), occurs
+   exactly once. A base is *mappable* if at least one uniquely mappable window
+   covers it. The BED holds the maximal runs of mappable bases.
 
 ## Reproduce
 
@@ -59,11 +58,6 @@ conda env create -p .envs/mappability -f mappability/environment.yml   # once
 sbatch mappability/run_mappability.sbatch                              # K=100, E=2
 # other settings: sbatch --export=ALL,K=150,E=0 mappability/run_mappability.sbatch
 ```
-
-The job writes to `results/mappability/` and needs about 25 GB of intermediates in
-`results/mappability/B73v5_k100_e2/` (converted FASTA, index, raw frequencies),
-which are safe to delete once the BED exists. It must run genome-wide: the
-suffix-array build needs about 10 bytes per base for inputs over 2 GB.
 
 ## Choices and caveats
 
