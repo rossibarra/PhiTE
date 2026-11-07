@@ -23,8 +23,8 @@ from MaizeGDB.
 |---|---|
 | [`run_mappability.sbatch`](run_mappability.sbatch) | Slurm driver for the whole pipeline: convert, index, map, make BED. |
 | [`bisulfite_convert.py`](bisulfite_convert.py) | Writes the C->T converted reference (forward and reverse complement). |
-| [`genmap_to_bed.py`](genmap_to_bed.py) | Turns GenMap's raw frequencies into the BED and summary table. |
-| [`environment.yml`](environment.yml) | Separate conda env holding GenMap 1.3.0 (not part of the project env). |
+| [`genmap_to_bed.py`](genmap_to_bed.py) | Turns GenMap's raw frequencies into the BED. |
+| [`environment.yml`](environment.yml) | Separate conda env holding [GenMap](https://github.com/cpockrandt/genmap) 1.3.0 (not part of the project env). |
 
 ## What we did
 
@@ -35,7 +35,7 @@ from MaizeGDB.
    reverse complement (records `NAME` and `NAME__rc`).
 2. **Converted the reference** with `bisulfite_convert.py` (N and other non-ACGT
    become N).
-3. **Counted k-mer occurrences genome-wide** with GenMap: `genmap index`, then
+3. **Counted k-mer occurrences genome-wide** with [GenMap](https://github.com/cpockrandt/genmap): `genmap index`, then
    `genmap map -K 100 -E 2 -nc`. `-K 100` is the read length. `-E 2` allows up to
    2 mismatches: a 100-mer counts as a repeat if it occurs elsewhere in the
    converted genome with at most 2 positions differing, so near-copies count as

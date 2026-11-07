@@ -45,7 +45,6 @@ def main():
     ap.add_argument("freq8")
     ap.add_argument("out")
     ap.add_argument("--K", type=int, default=100)
-    ap.add_argument("--summary", help="per-sequence summary TSV")
     args = ap.parse_args()
     K = args.K
 
@@ -56,10 +55,6 @@ def main():
     offs = np.concatenate(([0], np.cumsum(lens)))
     index = {n: i for i, n in enumerate(names)}
 
-    summ = open(args.summary, "w") if args.summary else None
-    if summ:
-        summ.write("sequence\tlength\tunique_top\tunique_bottom\tmappable_bases\t"
-                   "mappable_fraction\n")
     with open(args.out, "w") as bed:
         for n in names:
             if n.endswith("__rc"):
@@ -81,11 +76,6 @@ def main():
             s, e = runs(mappable)
             for a, z in zip(s, e):
                 bed.write(f"{n}\t{a}\t{z}\n")
-            if summ:
-                summ.write(f"{n}\t{L}\t{top.sum()}\t{bottom.sum()}\t{mappable.sum()}\t"
-                           f"{mappable.mean():.4f}\n")
-    if summ:
-        summ.close()
 
 
 if __name__ == "__main__":
