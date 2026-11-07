@@ -10,10 +10,9 @@ mismatches allowed and reads from either strand.
 
 ## Data
 
-| File | What it is |
-|---|---|
-| [`B73v5_bisulfite_k100_e2.mappable.bed.gz`](B73v5_bisulfite_k100_e2.mappable.bed.gz) | The mask: 2,013,753 intervals of mappable bases, 3-column BED (0-based, half-open), chr1-10 and all scaffolds. About 15 MB gzipped (committed here). |
-| `results/mappability/B73v5_bisulfite_k100_e2.summary.tsv` | Per-sequence counts of unique top- and bottom-strand windows and the mappable fraction (untracked; `results/` is git-ignored). |
+[`B73v5_bisulfite_k100_e2.mappable.bed.gz`](B73v5_bisulfite_k100_e2.mappable.bed.gz):
+the mask, 2,013,753 intervals of mappable bases as a 3-column BED (0-based,
+half-open) covering chr1-10 and all scaffolds. About 15 MB gzipped.
 
 Reference: [B73 v5 (Zm-B73-REFERENCE-NAM-5.0)](https://download.maizegdb.org/Zm-B73-REFERENCE-NAM-5.0/Zm-B73-REFERENCE-NAM-5.0.fa.gz)
 from MaizeGDB.
