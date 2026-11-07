@@ -1,0 +1,11 @@
+# Separate from the project's environment.yml: only the bisulfite mappability
+# pipeline needs GenMap.  Build into a prefix inside the repo:
+#   conda env create -p .envs/mappability -f mappability/environment.yml
+name: normalizeTE-mappability
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - genmap
+  - python=3.12
+  - numpy
