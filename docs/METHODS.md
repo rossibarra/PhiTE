@@ -65,6 +65,23 @@ every category must pass the drift check in the README before its result is used
 [VALIDATION.md](VALIDATION.md#v4-and-v5-production-matching-and-phi-sfs)). A
 larger category depletes the pool faster, so its drift may start earlier.
 
+**500 sets is the recommended production setting.** Fewer sets are not wrong as
+matching, and because seeds and depletion are sequential, a 100-set run produces
+exactly the first 100 sets of a 500-set run. Inference is what suffers:
+
+- the smallest attainable $P_A$ is $1/(R+1)$, about 0.01 at $R\approx100$ against
+  about 0.002 at $R\approx500$, so after correction across several categories a
+  100-set run may be unable to reach significance however large the departure;
+- $\mu_0$ and $s_0$ are estimated from the $R$ null sets, so their standard errors
+  scale as $1/\sqrt{R}$, about 2.2 times larger at 100 than at 500, which carries
+  into $\hat\Phi_{\mathrm{SFS}}$ and $Z_A$;
+- the drift check works on blocks of 100 sets and has almost no power with one
+  block; and
+- the validated configuration, the `phi_sfs` default `--min-null-replicates 450`
+  and the verifier's 451-pass criterion all assume 500 sets.
+
+Use fewer sets only for exploratory runs, and report $R$ with any result from one.
+
 TE targets are built exactly as SNP targets are: ages from all usable posterior
 draws, no filter on ARG polarity, and the same eligibility rows. The matcher and
 Phi-SFS refuse a target built with a TE polarity mask.

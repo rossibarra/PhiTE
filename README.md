@@ -144,6 +144,10 @@ python -m normalize_tes.phi_sfs \
 ```
 
 The defaults publish 500 sets and require at least 450 QC-passing nulls.
+**Use 500 sets for production.** Fewer sets cap the smallest attainable P-value
+at $1/(R+1)$ (about 0.01 for 100 sets), make the null mean and SD noisier, weaken
+the drift check, and fail the default Phi-SFS and verifier thresholds; see
+[METHODS.md](docs/METHODS.md#matched-controls).
 
 ### On HPC with Slurm
 

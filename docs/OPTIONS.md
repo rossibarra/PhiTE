@@ -122,7 +122,7 @@ Matcher (`normalize_tes.bootstrap_target_matcher`):
 | `--output` | new matched-control bundle | required |
 | `--work-dir` | durable per-replicate state for `--resume` | required |
 | `--resume` | continue an interrupted compatible run | off |
-| `--replicates` | control sets to publish | 500 |
+| `--replicates` | control sets to publish; 500 recommended for production (see [METHODS.md](METHODS.md)) | 500 |
 | `--restarts` | optimization restarts per set | 3 |
 | `--disjoint-replicates` | never reuse a control SNP between sets; required in production | off |
 | `--init-mode` | `median`, `mass` or `random` starting set per restart | `median` |
