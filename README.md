@@ -117,7 +117,12 @@ python -m normalize_tes.build_candidate_rows \
 ```
 
 **5. Age target and matched controls**: 500 disjoint SNP sets, each matched to a
-bootstrap of A's ages.
+bootstrap of A's ages. Each set is then QC-checked on age matching alone (never
+the SFS): its matching error must be under half the distance between its bootstrap
+and A's observed ages (`--qc-max-ratio 0.5`), and at most 0.34 × the target's
+acceptance threshold (`--qc-max-absolute-fraction 0.34`). Sets that fail are kept
+in the bundle but not used. The number that pass is an outcome, not a setting; in
+validation essentially every set passed (500 of 500, and 996 of 1,001).
 
 ```bash
 python -m normalize_tes.te_age_target \
@@ -143,7 +148,12 @@ python -m normalize_tes.phi_sfs \
   --ancestral-table "$ANCESTRAL" -A "$A_TYPE" --output "$PHI"
 ```
 
-The defaults publish 500 sets and require at least 450 QC-passing nulls.
+Phi-SFS draws the reference set $B_0$ from the QC-passing sets and uses every
+other passing set as a null, so $R$ = (QC passes − 1). It fails if $R < 450$
+(`--min-null-replicates`). The verifier's "at least 451 QC passes" is the same
+requirement: $B_0$ plus 450 nulls. A typical production run therefore has 500
+sets, about 500 passing QC, and $R\approx499$.
+
 **Use 500 sets for production.** Fewer sets cap the smallest attainable P-value
 at $1/(R+1)$ (about 0.01 for 100 sets), make the null mean and SD noisier, weaken
 the drift check, and fail the default Phi-SFS and verifier thresholds; see
@@ -235,7 +245,8 @@ python -m normalize_tes.verify_run \
 
 The verifier authenticates the candidate, target, matched bundle and Phi-SFS
 provenance; requires the current checkout's release and commit; checks the
-production settings (500 disjoint sets, at least 451 QC passes, no control
+production settings (500 disjoint sets, at least 451 QC passes, i.e. $B_0$ plus
+450 nulls, no control
 reuse, posterior-mixture polarity and equal $M$); and tests matching-order drift.
 It writes `criteria.csv`, `blocks.csv` and `report.json`, and exits nonzero if
 any criterion fails. Every row of `criteria.csv` must read `True`.

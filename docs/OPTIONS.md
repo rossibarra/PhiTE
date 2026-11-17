@@ -124,6 +124,9 @@ Matcher (`normalize_tes.bootstrap_target_matcher`):
 | `--resume` | continue an interrupted compatible run | off |
 | `--replicates` | control sets to publish; 500 recommended for production (see [METHODS.md](METHODS.md)) | 500 |
 | `--restarts` | optimization restarts per set | 3 |
+| `--qc-max-ratio` | QC: a set passes only if its matching error $E_r$ is below this fraction of its bootstrap displacement $B_r$ | 0.5 |
+| `--qc-max-absolute-fraction` | QC: a set passes only if $E_r$ ≤ this fraction of the target's acceptance threshold | 0.34 |
+| `--qc-max-absolute` | QC: fixed cap on $E_r$ in generations; replaces the fraction cap and does not scale with target size | none |
 | `--disjoint-replicates` | never reuse a control SNP between sets; required in production | off |
 | `--init-mode` | `median`, `mass` or `random` starting set per restart | `median` |
 | `--seed` | global matching seed; production uses 1002 | 0 |
@@ -145,7 +148,7 @@ exactly, including whether the checkout had uncommitted edits.
 | `-B`, `--b-type` | control type; only `SNP` | `SNP` |
 | `--reference-seed` | seed, with the target seed identity, for drawing $B_0$; legacy v0.9.0 bundles use the target digest | 1002 |
 | `--reference-replicate` | use this replicate ID as $B_0$ instead of drawing it | none |
-| `--min-null-replicates` | fail if fewer QC-passing nulls | 450 |
+| `--min-null-replicates` | fail if fewer QC-passing nulls remain after reserving $B_0$ ($R$ = QC passes − 1) | 450 |
 | `--max-null-replicates N` | fix $R=N$ from the seeded permutation; fails if fewer than $N+1$ pass | every passing set |
 | `--reference-sensitivity N` | repeat calibration with the next $N$ sets as $B_0$ | 0 |
 | `--asymmetric-polarity-null` | Bernoulli-$`q`$ option (see [METHODS.md](METHODS.md)) | off |
@@ -167,6 +170,15 @@ disjoint bundle).
 With `--asymmetric-polarity-null`, Phi-SFS also writes the hard null spectra
 (`b_bernoulli_q_*.npy`), and `metadata.json` records the null design, the seed, the
 imputation algorithm, and the separate A, reference and null polarity rules.
+
+## 7. Verifier
+
+| flag | purpose | default |
+|---|---|---|
+| `--expected-replicates` | number of published sets the bundle must hold | 500 |
+| `--min-qc-passes` | fail if fewer sets pass matching QC; 451 = $B_0$ plus Phi-SFS's 450 nulls | 451 |
+| `--min-resolved-fraction` | fail if any candidate-rows inclusion or exclusion list resolved fewer than this fraction of its positions | 0.70 |
+| `--expected-commit` | commit every artifact must record | current checkout |
 
 ## Farm launchers
 
